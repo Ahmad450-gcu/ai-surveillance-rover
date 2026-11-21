@@ -2,12 +2,15 @@
 
     python -m backend.manage create-user admin
     python -m backend.manage list-users
+In Docker:  docker compose exec backend python -m backend.manage create-user admin
 """
 import getpass
-import sqlite3
 import sys
 
-from backend.app import create_user, db
+from sqlalchemy import select
+
+from backend.app import create_user, rows
+from backend.db import users
 
 
 def main():
@@ -19,11 +22,11 @@ def main():
             sys.exit("Passwords don't match.")
         try:
             create_user(sys.argv[2], password)
-        except sqlite3.IntegrityError:
-            sys.exit(f"User {sys.argv[2]} already exists.")
+        except ValueError as e:
+            sys.exit(str(e))
         print(f"User {sys.argv[2]} created.")
     elif len(sys.argv) == 2 and sys.argv[1] == "list-users":
-        for u in db.all("SELECT username, created FROM users"):
+        for u in rows(select(users.c.username, users.c.created)):
             print(f"{u['username']}  (created {u['created']})")
     else:
         sys.exit(__doc__)

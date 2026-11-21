@@ -1,0 +1,7 @@
+# Backend container only (see docker/backend/Dockerfile)
+fastapi==0.162.0
+uvicorn[standard]==0.54.0
+pyjwt==2.15.1
+pyyaml
+sqlalchemy>=2.0,<2.1
+psycopg[binary]>=3.2,<3.3

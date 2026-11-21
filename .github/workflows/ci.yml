@@ -8,6 +8,16 @@ on:
 jobs:
   lint-and-test:
     runs-on: ubuntu-latest
+    services:
+      postgres:                      # backend tests also run against the production database engine
+        image: postgres:16.4-alpine
+        env:
+          POSTGRES_USER: rover
+          POSTGRES_PASSWORD: rover
+          POSTGRES_DB: rover_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U rover" --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -20,5 +30,20 @@ jobs:
           pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements-dev.txt
       - name: Lint
         run: ruff check .
-      - name: Tests
+      - name: Tests (SQLite)
         run: pytest
+      - name: Backend tests (PostgreSQL)
+        env:
+          TEST_DATABASE_URL: postgresql+psycopg://rover:rover@localhost:5432/rover_test
+        run: pytest tests/test_backend.py
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate docker-compose.yml
+        run: |
+          cp .env.example .env
+          docker compose config --quiet
+      - name: Build images
+        run: docker compose build backend mlflow

@@ -1,0 +1,15 @@
+.git
+venv
+.venv
+data
+outputs
+alerts
+mlruns
+models/*.pt
+tests/videos
+docs/img
+**/__pycache__
+**/*.pyc
+.env
+backend/surveillance.db
+backend/.jwt_secret

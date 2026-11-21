@@ -65,17 +65,17 @@ flowchart LR
 | Streaming ingestion | **Apache Kafka** (KRaft, single broker). Topics: `rover.pose_frames`, `rover.objects`, `rover.telemetry`, `predictions`, `alerts`, `dlq` | 9092 | ⬜ Phase 5 |
 | Stream processing & data quality | **Spark Structured Streaming**: schema validation, missing/late data (watermarking), deduplication, range checks, feature engineering, prediction | 7077 | ⬜ Phase 5 |
 | Invalid / rejected data | Dead-letter topic + `rejected/` bucket with the rejection reason | – | ⬜ Phase 5 |
-| Data lake | **MinIO** (S3-compatible). Zones: `raw/`, `validated/`, `labelled/`, `processed/`, partitioned by rover and date (Parquet). Also the DVC remote and MLflow artifact store | 9000 | ⬜ Phase 1–2 |
-| Operational store | **PostgreSQL**: alerts, predictions, telemetry, users; metadata for MLflow and Airflow | 5432 | ⬜ Phase 1 |
+| Data lake | **MinIO** (S3-compatible). Buckets `raw`, `validated`, `rejected`, `labelled`, `processed` (partitioned by rover and date, Parquet), plus `datasets`, `mlflow` (artifact store) and `dvc` (DVC remote). Versioning on curated buckets; raw footage expires after 30 days, rejected records after 14 | 9000 / 9001 | ✅ buckets (Phase 1); data in Phase 2 |
+| Operational store | **PostgreSQL**: alerts, predictions, telemetry, users; metadata for MLflow and Airflow | 5432 | ✅ |
 | Model serving | **FastAPI** inference service, ONNX Runtime, loads `@champion` of each activity from the registry, hot-reloads | 8000 | ⬜ Phase 4 |
-| App backend | FastAPI backend (auth, alerts, clips, rover commands) | 8080 | ✅ (SQLite → PostgreSQL in Phase 1) |
+| App backend | FastAPI backend (auth, alerts, clips, rover commands), SQLAlchemy on PostgreSQL, `/health` + `/ready` probes | 8080 | ✅ |
 | Monitoring & alerting | **Prometheus**, **Grafana** (dashboards as code), **Alertmanager** | 9090 / 3000 / 9093 | ⬜ Phase 6 |
 | Data drift | Scheduled drift job: **Evidently** reports + Population Stability Index on features and prediction confidence; concept drift from the false-alarm rate of labelled alerts | – | ⬜ Phase 6 |
 | Retraining pipeline | **Apache Airflow** DAG per activity; triggers: weekly, enough new labelled data, or drift | 8080* | ⬜ Phase 7 |
-| Experiment tracking & registry | **MLflow** (PostgreSQL backend, MinIO artifacts); aliases `@challenger` → `@champion` | 5000 | 🟡 tracking only |
+| Experiment tracking & registry | **MLflow** server (PostgreSQL backend, MinIO artifacts); aliases `@challenger` → `@champion` | 5000 | ✅ server; registry workflow in Phase 3 |
 | Data & model versioning | **DVC** pipeline (`dvc.yaml`), remote on MinIO | – | 🟡 2 stages |
-| Containerisation | Dockerfile per service, one `docker-compose.yml` with profiles | – | ⬜ Phase 1 |
-| CI/CD | **GitHub Actions**: lint + tests on every push/PR → build and publish images → deploy | – | 🟡 CI added |
+| Containerisation | Dockerfile per service (`docker/`), one `docker-compose.yml` with health checks, memory limits and profiles | – | ✅ |
+| CI/CD | **GitHub Actions**: lint + tests (SQLite and PostgreSQL) + compose validation + image builds on every push/PR → publish images → deploy | – | 🟡 CI done; CD in Phase 8 |
 
 \* Airflow's web UI is mapped to another host port because the backend already uses 8080.
 
@@ -126,7 +126,7 @@ Compose profiles keep memory use manageable (`core`, `streaming`, `mlops`, `moni
 | Phase | Content | Status |
 |---|---|---|
 | 0 | Repo setup: env-based config, lint, tests, CI | ✅ |
-| 1 | Docker foundation: PostgreSQL, MinIO, MLflow; backend on PostgreSQL | ⬜ |
+| 1 | Docker foundation: PostgreSQL, MinIO, MLflow; backend on PostgreSQL | ✅ |
 | 2 | Data layer: lake buckets, DVC remote on MinIO, dataset versioning, data validation | ⬜ |
 | 3 | Training pipeline: full DVC stages, MLflow registry, ONNX export, model tests | ⬜ |
 | 4 | Model serving API | ⬜ |

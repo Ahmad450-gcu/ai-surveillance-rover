@@ -3,18 +3,16 @@
 Run (from the project folder):
     python -m backend.manage create-user admin      # once
     python -m backend                               # http://<laptop-ip>:8080
+or as a container:  docker compose up -d backend   (PostgreSQL via DATABASE_URL)
 
 Who talks to it:
     run.py (the detector)  -> /api/device/*   with header X-Device-Token (config backend.device_token)
     dashboard / phone app  -> /api/*          with a login token (JWT)
+    Docker / monitoring    -> /health, /ready
 """
 import hashlib
 import hmac
-import json
-import os
 import secrets
-import sqlite3
-import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -23,64 +21,53 @@ import jwt
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from sqlalchemy import case, func, insert, select, text, update
+from sqlalchemy.exc import IntegrityError
 
+from backend.db import alerts, commands, make_engine, telemetry, users
 from rover_ai.settings import load_config
 
 ROOT = Path(__file__).resolve().parent.parent
 HERE = Path(__file__).resolve().parent
 CFG = load_config(ROOT / "config.yaml")
 ALERTS_DIR = (ROOT / CFG["alerts"]["dir"]).resolve()
-DEVICE_TOKEN = CFG["backend"]["device_token"]
-DB_PATH = Path(os.environ.get("ROVER_DB", HERE / "surveillance.db"))
+DEVICE_TOKEN = str(CFG["backend"]["device_token"])
 SECRET_PATH = HERE / ".jwt_secret"
 TOKEN_HOURS = 12
 ALERT_TYPES = ("fight", "theft", "loitering", "restricted")
 MODES = ("manual", "guard", "patrol")
 DRIVES = ("forward", "back", "left", "right", "stop")
 
-if not SECRET_PATH.exists():
-    SECRET_PATH.write_text(secrets.token_hex(32))
-JWT_SECRET = SECRET_PATH.read_text().strip()
+
+def _jwt_secret():
+    """From the environment (ROVER__BACKEND__JWT_SECRET) in Docker/production, else a generated local file."""
+    if CFG["backend"].get("jwt_secret"):
+        return str(CFG["backend"]["jwt_secret"])
+    if not SECRET_PATH.exists():
+        SECRET_PATH.write_text(secrets.token_hex(32))
+    return SECRET_PATH.read_text().strip()
+
+
+JWT_SECRET = _jwt_secret()
 
 
 # ============================== database ==============================
-class DB:
-    def __init__(self, path):
-        self.conn = sqlite3.connect(path, check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
-        self.lock = threading.Lock()
-        self.conn.executescript("""
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY, username TEXT UNIQUE NOT NULL, pw_hash TEXT NOT NULL, created TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS alerts (
-                id INTEGER PRIMARY KEY, time TEXT NOT NULL, type TEXT NOT NULL, message TEXT NOT NULL,
-                track_ids TEXT, snapshot TEXT, clip TEXT, label TEXT, received TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS telemetry (id INTEGER PRIMARY KEY, time TEXT NOT NULL, data TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS commands (
-                id INTEGER PRIMARY KEY, time TEXT NOT NULL, data TEXT NOT NULL, username TEXT, delivered INTEGER DEFAULT 0);
-            CREATE INDEX IF NOT EXISTS alerts_time ON alerts(time);
-        """)
-
-    def run(self, sql, args=()):
-        with self.lock:
-            cur = self.conn.execute(sql, args)
-            self.conn.commit()
-            return cur
-
-    def all(self, sql, args=()):
-        with self.lock:
-            return [dict(r) for r in self.conn.execute(sql, args).fetchall()]
-
-    def one(self, sql, args=()):
-        rows = self.all(sql, args)
-        return rows[0] if rows else None
+engine = make_engine()
 
 
-db = DB(DB_PATH)
+def rows(stmt):
+    with engine.connect() as conn:
+        return [dict(r._mapping) for r in conn.execute(stmt)]
 
 
-def now_iso():
-    return datetime.now().isoformat(timespec="seconds")
+def one(stmt):
+    found = rows(stmt)
+    return found[0] if found else None
+
+
+def execute(stmt):
+    with engine.begin() as conn:
+        return conn.execute(stmt)
 
 
 def hash_password(password, salt=None):
@@ -95,8 +82,11 @@ def check_password(password, stored):
 
 
 def create_user(username, password):
-    db.run("INSERT INTO users (username, pw_hash, created) VALUES (?, ?, ?)",
-           (username, hash_password(password), now_iso()))
+    """Raises ValueError if the user already exists."""
+    try:
+        execute(insert(users).values(username=username, pw_hash=hash_password(password)))
+    except IntegrityError:
+        raise ValueError(f"User {username} already exists.") from None
 
 
 # ============================== auth ==============================
@@ -116,7 +106,7 @@ def device(x_device_token: str = Header(default="")):
 
 # ============================== app ==============================
 app = FastAPI(title="AI Surveillance Rover")
-LIVE = {"status": None, "seen": 0.0}
+LIVE = {"status": None, "seen": 0.0, "stored": 0.0}
 TELEMETRY_EVERY_S = 10
 
 
@@ -132,6 +122,9 @@ class AlertIn(BaseModel):
     track_ids: list = []
     snapshot: str | None = None
     clip: str | None = None
+    score: float | None = None
+    model_version: str | None = None
+    rover_id: str | None = None
 
 
 class Label(BaseModel):
@@ -143,9 +136,26 @@ class Command(BaseModel):
     drive: str | None = None
 
 
+@app.get("/health")
+def health():
+    """Liveness probe (Docker healthcheck / load balancer)."""
+    return {"status": "ok"}
+
+
+@app.get("/ready")
+def ready():
+    """Readiness probe: the database answers."""
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(503, f"database unavailable: {type(e).__name__}") from None
+    return {"status": "ready", "database": engine.dialect.name}
+
+
 @app.post("/api/login")
 def login(body: Login):
-    user = db.one("SELECT * FROM users WHERE username = ?", (body.username,))
+    user = one(select(users).where(users.c.username == body.username))
     if not user or not check_password(body.password, user["pw_hash"]):
         raise HTTPException(401, "Wrong username or password")
     exp = datetime.now(timezone.utc) + timedelta(hours=TOKEN_HOURS)
@@ -161,28 +171,29 @@ def me(user=Depends(current_user)):
 # ---------------- alerts ----------------
 @app.get("/api/alerts")
 def list_alerts(limit: int = 50, type: str | None = None, after_id: int = 0, user=Depends(current_user)):
-    sql, args = "SELECT * FROM alerts WHERE id > ?", [after_id]
+    stmt = select(alerts).where(alerts.c.id > after_id)
     if type:
-        sql += " AND type = ?"
-        args.append(type)
-    rows = db.all(sql + " ORDER BY id DESC LIMIT ?", (*args, min(limit, 500)))
-    for r in rows:
-        r["track_ids"] = json.loads(r["track_ids"] or "[]")
-    return rows
+        stmt = stmt.where(alerts.c.type == type)
+    return rows(stmt.order_by(alerts.c.id.desc()).limit(min(limit, 500)))
 
 
 @app.get("/api/alerts/stats")
 def alert_stats(user=Depends(current_user)):
-    rows = db.all("SELECT type, COUNT(*) AS n, SUM(label = 'real') AS real, SUM(label = 'false_alarm') AS false_alarm "
-                  "FROM alerts GROUP BY type")
-    return {r["type"]: {"total": r["n"], "real": r["real"] or 0, "false_alarm": r["false_alarm"] or 0} for r in rows}
+    stmt = select(
+        alerts.c.type,
+        func.count().label("n"),
+        func.sum(case((alerts.c.label == "real", 1), else_=0)).label("real"),
+        func.sum(case((alerts.c.label == "false_alarm", 1), else_=0)).label("false_alarm"),
+    ).group_by(alerts.c.type)
+    return {r["type"]: {"total": r["n"], "real": r["real"] or 0, "false_alarm": r["false_alarm"] or 0}
+            for r in rows(stmt)}
 
 
 @app.patch("/api/alerts/{alert_id}")
 def label_alert(alert_id: int, body: Label, user=Depends(current_user)):
     if body.label not in ("real", "false_alarm", ""):
         raise HTTPException(400, "label must be 'real' or 'false_alarm'")
-    if db.run("UPDATE alerts SET label = ? WHERE id = ?", (body.label or None, alert_id)).rowcount == 0:
+    if execute(update(alerts).where(alerts.c.id == alert_id).values(label=body.label or None)).rowcount == 0:
         raise HTTPException(404, "No such alert")
     return {"ok": True}
 
@@ -210,35 +221,35 @@ def command(body: Command, user=Depends(current_user)):
         raise HTTPException(400, f"drive must be one of {DRIVES}")
     if not body.mode and not body.drive:
         raise HTTPException(400, "send a mode or a drive command")
-    db.run("INSERT INTO commands (time, data, username) VALUES (?, ?, ?)",
-           (now_iso(), body.model_dump_json(exclude_none=True), user))
+    execute(insert(commands).values(data=body.model_dump(exclude_none=True), username=user))
     return {"ok": True}
 
 
 # ---------------- device (detector) side ----------------
 @app.post("/api/device/alerts", dependencies=[Depends(device)])
 def device_alert(body: AlertIn):
-    cur = db.run("INSERT INTO alerts (time, type, message, track_ids, snapshot, clip, received) "
-                 "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                 (body.time, body.type, body.message, json.dumps(body.track_ids), body.snapshot, body.clip, now_iso()))
-    return {"id": cur.lastrowid}
+    with engine.begin() as conn:
+        alert_id = conn.execute(insert(alerts).values(**body.model_dump()).returning(alerts.c.id)).scalar_one()
+    return {"id": alert_id}
 
 
 @app.post("/api/device/status", dependencies=[Depends(device)])
 def device_status(body: dict):
     LIVE["status"], LIVE["seen"] = body, time.time()
-    last = db.one("SELECT time FROM telemetry ORDER BY id DESC LIMIT 1")
-    if not last or (datetime.now() - datetime.fromisoformat(last["time"])).total_seconds() >= TELEMETRY_EVERY_S:
-        db.run("INSERT INTO telemetry (time, data) VALUES (?, ?)", (now_iso(), json.dumps(body)))
+    if time.time() - LIVE["stored"] >= TELEMETRY_EVERY_S:     # keep one telemetry row every 10 s
+        LIVE["stored"] = time.time()
+        execute(insert(telemetry).values(data=body))
     return {"ok": True}
 
 
 @app.get("/api/device/commands", dependencies=[Depends(device)])
 def device_commands():
-    rows = db.all("SELECT id, data FROM commands WHERE delivered = 0 ORDER BY id")
-    if rows:
-        db.run(f"UPDATE commands SET delivered = 1 WHERE id IN ({','.join('?' * len(rows))})", [r["id"] for r in rows])
-    return [json.loads(r["data"]) for r in rows]
+    with engine.begin() as conn:
+        pending = conn.execute(select(commands.c.id, commands.c.data)
+                               .where(commands.c.delivered.is_(False)).order_by(commands.c.id)).all()
+        if pending:
+            conn.execute(update(commands).where(commands.c.id.in_([r.id for r in pending])).values(delivered=True))
+    return [r.data for r in pending]
 
 
 # ---------------- dashboard ----------------

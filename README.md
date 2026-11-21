@@ -46,6 +46,26 @@ python tools/get_test_videos.py    # downloads the two test videos (~17 MB)
 
 The YOLO model weights (`models/yolo11n-pose.pt`, `models/yolo11n.pt`, ~11 MB) download automatically the first time you run the app.
 
+## Service stack (Docker)
+
+The backend, database, data lake and model registry run as containers (needs Docker Desktop):
+
+```bash
+cp .env.example .env               # Windows: copy .env.example .env   — then replace every "change-me"
+docker compose up -d --build       # PostgreSQL, MinIO data lake, MLflow, backend
+docker compose ps                  # wait until every service shows "healthy"
+docker compose exec backend python -m backend.manage create-user admin
+```
+
+| Service | URL | What it is |
+|---|---|---|
+| Backend + dashboard | http://localhost:8080 | alerts, clips, rover control (`/health`, `/ready` for probes) |
+| MLflow | http://localhost:5000 | experiment tracking and model registry |
+| MinIO console | http://localhost:9001 | data lake buckets (log in with `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD`) |
+| PostgreSQL | localhost:5432 | operational database |
+
+Stop with `docker compose down` (data is kept in Docker volumes; `docker compose down -v` deletes it). With the stack running, set `ROVER__BACKEND__URL=http://localhost:8080` in `.env` so `run.py` sends its alerts there, and training runs log to MLflow automatically (`MLFLOW_TRACKING_URI`). The Pi agent must be started with the same token as `ROVER__ROVER__TOKEN` in `.env`.
+
 ## Testing (no camera needed)
 
 Automated checks (also run by GitHub Actions on every push):

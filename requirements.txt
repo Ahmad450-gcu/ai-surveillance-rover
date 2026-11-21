@@ -1,7 +1,8 @@
 # torch 2.2.2: last release with Intel-Mac wheels; also installs on Windows/Linux (Python 3.10-3.12)
 torch==2.2.2
 torchvision==0.17.2
-numpy<2
+numpy<2                 # torch 2.2 is built against NumPy 1.x
+scipy<1.14              # last SciPy line that supports NumPy 1.x (pulled in by mlflow/ultralytics)
 ultralytics==8.4.189
 opencv-python<4.11
 lap>=0.5.12
@@ -11,3 +12,8 @@ requests
 fastapi==0.162.0
 uvicorn[standard]==0.54.0
 pyjwt==2.15.1
+# MLOps clients (servers run in Docker, see docker-compose.yml)
+mlflow==2.17.2
+# database (backend on PostgreSQL / SQLite)
+sqlalchemy>=2.0,<2.1
+psycopg[binary]>=3.2,<3.3

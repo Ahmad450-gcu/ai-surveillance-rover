@@ -379,14 +379,24 @@ def plots(rep, history, y, scores, thr, learned, rules):
 
 
 def log_mlflow(meta, history):
-    """Log the run to MLflow if it is installed (pip install mlflow; view with: mlflow ui)."""
+    """Log the run to MLflow: the tracking server from MLFLOW_TRACKING_URI (.env, e.g. the Docker stack at
+    http://localhost:5000), or a local ./mlruns folder when it is not set."""
     try:
         import mlflow
     except ImportError:
         return
-    mlflow.set_tracking_uri((ROOT / "mlruns").as_uri())
+    import os
+    import subprocess
+
+    from rover_ai.settings import load_dotenv
+    load_dotenv()
+    mlflow.set_tracking_uri(os.environ.get("MLFLOW_TRACKING_URI") or (ROOT / "mlruns").as_uri())
     mlflow.set_experiment("fight-model")
-    with mlflow.start_run():
+    try:
+        commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
+    except OSError:
+        commit = ""
+    with mlflow.start_run(tags={"git_commit": commit, "activity": "fight"}):
         mlflow.log_params(P)
         for h in history:
             mlflow.log_metrics({"loss": h["loss"], "dev_auc": h["dev_auc"]}, step=h["epoch"])

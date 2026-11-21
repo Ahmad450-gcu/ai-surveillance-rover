@@ -3,3 +3,5 @@
 pytest>=8
 ruff>=0.6
 pre-commit>=3.7
+virtualenv<21           # newer virtualenv needs packaging>=26, which mlflow 2.x does not allow
+httpx>=0.27            # FastAPI TestClient
