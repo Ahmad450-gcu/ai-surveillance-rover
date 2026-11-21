@@ -1,18 +1,48 @@
-# MLOps pipeline. Run everything (only changed stages re-run):   dvc repro
-# Without DVC the same two commands can be run by hand, in this order.
+# Reproducible training pipeline. Run everything (only stages whose inputs changed re-run):
+#     dvc repro            then   dvc push      (store the data/model versions in the lake, bucket "dvc")
+# Stage order follows the data lake zones: datasets -> raw -> validated -> (processed) -> model
 stages:
-  extract_pose:
-    cmd: python training/extract_pose.py --archive data/rwf/RWF-2000.tar.gz --out data/rwf/pose --workers 3
+  ingest:                    # public dataset -> lake (bucket "datasets"), SHA-256 verified
+    cmd: python training/ingest.py --keep
     deps:
-      - data/rwf/RWF-2000.tar.gz
+      - training/ingest.py
+      - mlops/lake.py
+    params:
+      - dataset
+    outs:
+      - data/manifests/rwf2000.json:
+          cache: false       # small, kept in git: which exact dataset version was used
+
+  extract_pose:              # videos -> tracked skeletons (raw zone), same YOLO11n-pose + ByteTrack as live
+    cmd: python training/extract_pose.py --workers 3 --upload --cleanup
+    deps:
+      - data/manifests/rwf2000.json
       - training/extract_pose.py
       - models/yolo11n-pose.pt
     outs:
-      - data/rwf/pose
+      - data/raw/pose/rwf2000
+
+  validate:                  # quality gate: raw -> validated / rejected zones, report, drift reference profile
+    cmd: python training/validate_data.py --upload
+    deps:
+      - data/raw/pose/rwf2000
+      - training/validate_data.py
+      - mlops/validation.py
+    params:
+      - data_validation
+    outs:
+      - data/validated/pose/rwf2000
+      - reports/data_validation_clips.jsonl
+      - reports/data_profile.json:
+          cache: false
+    metrics:
+      - reports/data_validation.json:
+          cache: false
+
   train_fight:
     cmd: python training/train_fight.py
     deps:
-      - data/rwf/pose
+      - data/validated/pose/rwf2000
       - training/train_fight.py
       - rover_ai/learned.py
     params:

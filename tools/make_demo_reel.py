@@ -8,7 +8,7 @@ a bag or phone on a table, a hand takes it away).
     python tools/make_demo_reel.py                          # -> data/demo/demo_reel.mp4 + demo_reel.txt
     python tools/make_demo_reel.py --stealing my_clip.mp4   # add your own stealing scene
 
-Needs data/rwf/RWF-2000.tar.gz (the clips are taken out of it once, into data/demo/clips/) and
+Needs data/cache/RWF-2000.tar.gz (get it with: python training/ingest.py --keep; the clips are taken out of it once, into data/demo/clips/) and
 tests/videos/walking.avi (python tools/get_test_videos.py).
 """
 import argparse
@@ -113,7 +113,7 @@ def clip_frames(path, start, end):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--archive", default="data/rwf/RWF-2000.tar.gz")
+    ap.add_argument("--archive", default="data/cache/RWF-2000.tar.gz")
     ap.add_argument("--out", default="data/demo/demo_reel.mp4")
     ap.add_argument("--stealing", help="your own stealing clip (a hand takes a bag / phone / laptop away)")
     args = ap.parse_args()

@@ -1,12 +1,16 @@
-"""Stage 1 of the training pipeline: video clips -> tracked skeletons.
+"""Pipeline stage "extract_pose": video clips -> tracked skeletons (raw zone of the data lake).
 
 Reads RWF-2000 straight out of its .tar.gz (no need to unpack 12 GB), runs the SAME
 YOLO11n-pose + ByteTrack used live, at 10 frames per second, and saves one small .npz per clip:
 
-    data/rwf/pose/<split>/<Fight|NonFight>/<clip>.npz
+    data/raw/pose/rwf2000/<split>/<Fight|NonFight>/<clip>.npz
         frame (N,)  track (N,)  box (N,4)  conf (N,)  kpts (N,17,3)  n_frames  width  height
 
-    python training/extract_pose.py --archive data/rwf/RWF-2000.tar.gz --out data/rwf/pose
+    python training/extract_pose.py                      # archive from data/cache, or fetched from the lake
+    python training/extract_pose.py --upload             # ... and copy the results to s3://raw/pose/rwf2000/
+
+The archive comes from the "ingest" stage: data/cache/<archive> if it is still there, otherwise it is
+downloaded from the lake (s3://datasets/...) and its SHA-256 is checked again.
 
 Your own clips (e.g. rover recordings) laid out the same way, <split>/<Fight|NonFight>/<clip>.mp4:
     python training/extract_pose.py --folder data/own --out data/own/pose
@@ -14,6 +18,7 @@ Already-processed clips are skipped, so it can be stopped and restarted.
 """
 import argparse
 import os
+import sys
 import tarfile
 import tempfile
 import time
@@ -23,6 +28,7 @@ from pathlib import Path
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 TARGET_FPS = 10.0
 _model = None
 
@@ -74,17 +80,52 @@ def process(video, out, delete=True, imgsz=480, conf=0.4):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--archive", default="data/rwf/RWF-2000.tar.gz")
+    ap.add_argument("--archive", help="local archive (default: data/cache/<archive name>, fetched from the lake if missing)")
     ap.add_argument("--folder", help="instead of the archive: a folder of <split>/<Fight|NonFight>/<clip> videos")
-    ap.add_argument("--out", default="data/rwf/pose")
+    ap.add_argument("--out", default="data/raw/pose/rwf2000")
     ap.add_argument("--workers", type=int, default=2)
     ap.add_argument("--threads", type=int, default=2, help="torch threads per worker")
     ap.add_argument("--limit", type=int, default=0, help="stop after this many clips (0 = all)")
+    ap.add_argument("--upload", action="store_true", help="copy the extracted pose files to the lake (raw zone)")
+    ap.add_argument("--cleanup", action="store_true", help="delete the local archive afterwards (the lake keeps it)")
     args = ap.parse_args()
 
     out_root = Path(args.out)
     if args.folder:
-        return extract_folder(Path(args.folder), out_root, args)
+        extract_folder(Path(args.folder), out_root, args)
+    else:
+        args.archive = args.archive or str(archive_from_lake())
+        extract_archive(out_root, args)
+        if args.cleanup and Path(args.archive).resolve().parent == (ROOT / "data" / "cache").resolve():
+            Path(args.archive).unlink()
+            print(f"deleted the local copy {args.archive} (the lake keeps the original)")
+    if args.upload:
+        from mlops import lake
+        prefix = "pose/" + out_root.name
+        up, same = lake.sync_dir(out_root, "raw", prefix, "*/*/*.npz")
+        print(f"lake: s3://raw/{prefix}/  {up} uploaded, {same} unchanged")
+
+
+def archive_from_lake():
+    """The ingested archive: the local copy if it is complete, otherwise downloaded from the lake and verified."""
+    import yaml
+
+    from mlops import lake
+    from training.ingest import sha256_file
+    cfg = yaml.safe_load((ROOT / "params.yaml").read_text())["dataset"]
+    local = ROOT / "data" / "cache" / Path(cfg["key"]).name
+    if local.exists() and local.stat().st_size == cfg["size"]:
+        return local
+    print(f"fetching s3://{cfg['bucket']}/{cfg['key']} from the lake ...", flush=True)
+    lake.download_file(cfg["bucket"], cfg["key"], local)
+    if sha256_file(local) != cfg["sha256"]:
+        local.unlink()
+        raise SystemExit("archive from the lake failed its SHA-256 check")
+    return local
+
+
+def extract_archive(out_root, args):
+    out_root.mkdir(parents=True, exist_ok=True)
     tmp = Path(tempfile.mkdtemp(prefix="rwf_", dir=out_root.parent))
     done = skipped = 0
     t0 = time.time()

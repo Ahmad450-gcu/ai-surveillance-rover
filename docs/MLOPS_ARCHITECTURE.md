@@ -73,13 +73,20 @@ flowchart LR
 | Data drift | Scheduled drift job: **Evidently** reports + Population Stability Index on features and prediction confidence; concept drift from the false-alarm rate of labelled alerts | – | ⬜ Phase 6 |
 | Retraining pipeline | **Apache Airflow** DAG per activity; triggers: weekly, enough new labelled data, or drift | 8080* | ⬜ Phase 7 |
 | Experiment tracking & registry | **MLflow** server (PostgreSQL backend, MinIO artifacts); aliases `@challenger` → `@champion` | 5000 | ✅ server; registry workflow in Phase 3 |
-| Data & model versioning | **DVC** pipeline (`dvc.yaml`), remote on MinIO | – | 🟡 2 stages |
+| Data & model versioning | **DVC** pipeline (`dvc.yaml`: ingest → extract_pose → validate → train), remote = MinIO bucket `dvc` | – | ✅ |
 | Containerisation | Dockerfile per service (`docker/`), one `docker-compose.yml` with health checks, memory limits and profiles | – | ✅ |
 | CI/CD | **GitHub Actions**: lint + tests (SQLite and PostgreSQL) + compose validation + image builds on every push/PR → publish images → deploy | – | 🟡 CI done; CD in Phase 8 |
 
 \* Airflow's web UI is mapped to another host port because the backend already uses 8080.
 
-## 3. Development pipeline (training)
+## 3. Data layer and data quality
+
+- **Ingestion:** the source dataset is downloaded once, verified against its published SHA-256 and stored immutably in `s3://datasets/`. A manifest in git records which version was used.
+- **Zones:** `raw` (as produced) → `validated` (passed the checks) or `rejected` (with the reason) → `processed` (training splits). Code in `mlops/lake.py`.
+- **Data contract** (`mlops/validation.py`): clip-level checks (schema, shapes, finite values, value ranges, box geometry, duplicates, minimum length) and dataset-level checks (reject rate, minimum size, class balance, train/test leakage). A failing blocking check stops the pipeline.
+- **Reference profile:** `reports/data_profile.json` stores binned distributions of the validated data (people per frame, keypoint and detection confidence, person size, clip length), the baseline for drift detection.
+
+## 4. Development pipeline (training)
 
 Every model is produced by a reproducible DVC pipeline, tracked in MLflow:
 
@@ -92,7 +99,7 @@ ingest → validate → extract_pose → preprocess → split (train/val/test) �
 - **Metrics:** accuracy, precision, recall, F1, ROC-AUC and the confusion matrix, plus false alarms per hour on normal footage.
 - **Promotion gate:** a new model becomes `@champion` only if it beats the current champion on the same hold-out set.
 
-## 4. Real-time production flow
+## 5. Real-time production flow
 
 1. The rover streams video to the perception service, which publishes per-frame pose and object records to Kafka.
 2. Spark validates each record. Invalid records go to the dead-letter topic. Valid ones are written to the lake and turned into 2-second windows.
@@ -100,7 +107,7 @@ ingest → validate → extract_pose → preprocess → split (train/val/test) �
 4. Predictions go to PostgreSQL. Positive ones go to the `alerts` topic, from which the backend stores the alert, saves the clip and notifies the app.
 5. **Graceful degradation:** if the streaming stack is unavailable, the detector falls back to in-process inference so the rover keeps protecting the area.
 
-## 5. Monitoring, drift and retraining (the feedback loop)
+## 6. Monitoring, drift and retraining (the feedback loop)
 
 - **System health:** latency, throughput, errors, Kafka consumer lag, detector FPS.
 - **Model health:** prediction confidence distribution, alert rate per activity, false-alarm rate from user labels.
@@ -108,11 +115,11 @@ ingest → validate → extract_pose → preprocess → split (train/val/test) �
 - **Human in the loop:** labels from the app/dashboard (real / false alarm) and low-confidence windows (active learning) move clips into the `labelled/` zone.
 - **Retraining:** Airflow extracts the new data, retrains, evaluates against the champion and registers the result. Promotion to `@champion` makes the serving API reload the new model; a short shadow/canary window confirms it before full rollout, otherwise the previous version stays.
 
-## 6. Adding a new activity model
+## 7. Adding a new activity model
 
 All activities are declared in one place (`activities.yaml`, Phase 9): name, type (`rule` or `model`), MLflow model name, input window and threshold. From that entry the pipeline creates the training stage, the Airflow retraining DAG, the `/predict/<activity>` endpoint and the Grafana panels. Today *fighting* is a trained model; *loitering*, *unauthorised access* and *theft* are rules that use the same interface, so each can be replaced by a trained model later without changing the rest of the pipeline.
 
-## 7. Deployment targets
+## 8. Deployment targets
 
 Everything runs in Docker Compose, configured only through environment variables (`.env`, see `.env.example`; any `config.yaml` value can be overridden as `ROVER__<SECTION>__<KEY>`). The same images and compose file run:
 
@@ -121,13 +128,13 @@ Everything runs in Docker Compose, configured only through environment variables
 
 Compose profiles keep memory use manageable (`core`, `streaming`, `mlops`, `monitoring`), so an 8 GB machine can run the parts it needs and a 16 GB machine runs the full stack.
 
-## 8. Implementation phases
+## 9. Implementation phases
 
 | Phase | Content | Status |
 |---|---|---|
 | 0 | Repo setup: env-based config, lint, tests, CI | ✅ |
 | 1 | Docker foundation: PostgreSQL, MinIO, MLflow; backend on PostgreSQL | ✅ |
-| 2 | Data layer: lake buckets, DVC remote on MinIO, dataset versioning, data validation | ⬜ |
+| 2 | Data layer: lake buckets, DVC remote on MinIO, dataset versioning, data validation | ✅ |
 | 3 | Training pipeline: full DVC stages, MLflow registry, ONNX export, model tests | ⬜ |
 | 4 | Model serving API | ⬜ |
 | 5 | Streaming: Kafka + Spark Structured Streaming, dead-letter handling | ⬜ |

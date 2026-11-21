@@ -5,18 +5,21 @@ The fight detector is a **trained model**: a small GRU neural network that reads
 ## 1. The pipeline
 
 ```
-RWF-2000 videos ──► 1. extract_pose ──► skeletons (.npz) ──► 2. train_fight ──► models/fight_gru.pt + .json
- (12 GB archive)     YOLO11n-pose +       one file per clip      GRU, threshold,     reports/fight_metrics.json
-                     ByteTrack, 10 fps                           test, rules compare reports/*.png
+Hugging Face ──► ingest ──► lake: datasets/ ──► extract_pose ──► lake: raw/ ──► validate ──► lake: validated/ ──► train_fight ──► model
+ RWF-2000         SHA-256     (12 GB archive)     YOLO11n-pose +    skeletons      quality gate    (+ rejected/)       GRU, CV,        + metrics
+ (12 GB)          verified                        ByteTrack, 10 fps (.npz/clip)    data profile                        test            in MLflow
 ```
 
 | Stage | Script | Input | Output | Time (laptop CPU) |
 |---|---|---|---|---|
-| 0. Get data | `curl` (below) | – | `data/rwf/RWF-2000.tar.gz` (12 GB) | ~7 min |
-| 1. Extract skeletons | `training/extract_pose.py` | the archive | `data/rwf/pose/<split>/<Fight\|NonFight>/*.npz` | ~2 h |
-| 2. Train + evaluate | `training/train_fight.py` | the skeletons + `params.yaml` | model, metrics, plots | ~9 min (incl. 5-fold CV) |
+| ingest | `training/ingest.py` | Hugging Face URL + SHA-256 in `params.yaml` | `s3://datasets/rwf2000/RWF-2000.tar.gz`, `data/manifests/rwf2000.json` | download time (12 GB) |
+| extract_pose | `training/extract_pose.py` | the archive | `data/raw/pose/rwf2000/<split>/<Fight\|NonFight>/*.npz`, copied to `s3://raw/` | ~2–3 h |
+| validate | `training/validate_data.py` | the raw skeletons | `data/validated/...` (+ `s3://validated/`, `s3://rejected/`), `reports/data_validation.json`, `reports/data_profile.json` | ~1 min |
+| train_fight | `training/train_fight.py` | the validated skeletons + `params.yaml` | model, metrics, plots, MLflow run | ~9 min (incl. 5-fold CV) |
 
-The settings live in `params.yaml`. `dvc.yaml` describes the same two stages for **DVC**, so `dvc repro` re-runs only what changed. If **MLflow** is installed, each training run is logged to `mlruns/` (view with `mlflow ui`).
+All settings live in `params.yaml`; `dvc.yaml` chains the stages, so `dvc repro` re-runs only what changed. Data and model versions are stored in the data lake with `dvc push` (bucket `dvc`), and each training run is logged to the MLflow server.
+
+**Data quality gate (validate stage).** Every clip is checked against a data contract: required fields, array shapes, finite values, confidences in [0, 1], valid boxes inside the frame, no duplicate detections, at least 2 s long. Broken clips go to the `rejected` zone with a `.reason.json`. Then the whole dataset is checked: reject rate below 5 %, enough clips per class, class balance, and no clip in both train and test (leakage). If a blocking check fails, the pipeline stops and no model is trained on bad data. The same run writes `reports/data_profile.json`, the reference distribution that drift monitoring compares live data against.
 
 ## 2. Why skeletons, not pixels
 
@@ -89,21 +92,18 @@ Plots: training curves (`reports/fight_training.png`), confusion matrices (`repo
 
 ## 7. Retraining, step by step
 
+The Docker stack must be running (`docker compose up -d`), so the lake and MLflow are reachable.
+
 ```bash
-source .venv/bin/activate
+source .venv/bin/activate          # Windows: venv\Scriptsctivate
+python tools/configure_dvc.py      # once: DVC remote = the lake (bucket "dvc"), keys from .env
 
-# 0. data (once)
-mkdir -p data/rwf
-curl -L -C - -o data/rwf/RWF-2000.tar.gz https://huggingface.co/datasets/DanJoshua/RWF-2000/resolve/main/RWF-2000.tar.gz
-
-# 1. skeletons (resumable: stop with Ctrl+C and run again to continue)
-python training/extract_pose.py --archive data/rwf/RWF-2000.tar.gz --out data/rwf/pose --workers 3
-
-# 2. train + evaluate
-python training/train_fight.py
+dvc repro                          # ingest -> extract_pose -> validate -> train_fight (only what changed)
+dvc push                           # store this data/model version in the lake
+dvc metrics show                   # data quality + model metrics
 ```
 
-Or, with DVC installed (`pip install dvc`): `dvc repro`.
+On another machine (e.g. the 16 GB laptop or a cloud VM): `git pull && dvc pull` gives exactly the same data and model versions. Stages can also be run alone, e.g. `dvc repro validate`. Pose extraction is resumable: stop it and run `dvc repro` again to continue.
 
 To try different settings, edit `params.yaml` (for example `window`, `hidden`, `epochs`) and run step 2 again. The new model replaces `models/fight_gru.pt`. Compare its numbers in `reports/fight_metrics.json` with the old ones before you keep it.
 

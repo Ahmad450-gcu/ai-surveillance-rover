@@ -142,7 +142,7 @@ python tools/make_demo_reel.py
 #  -> data/demo/demo_reel.mp4 (about 110 s) and data/demo/demo_reel.txt (scene times)
 ```
 
-- It needs `data/rwf/RWF-2000.tar.gz` (the clips are taken out once) and `tests/videos/walking.avi` (`python tools/get_test_videos.py`).
+- It needs `data/cache/RWF-2000.tar.gz` (get it with `python training/ingest.py --keep`; the clips are taken out once) and `tests/videos/walking.avi` (`python tools/get_test_videos.py`).
 - Each scene starts with a 4-second title card that says what should happen, so the audience can follow. Between clips there is a 3 s blank pause, so one clip's people are never mixed up with the next.
 - **Stealing scene (optional).** With your phone, record 10–15 s of a bag, phone or laptop lying still on a table for 5 s, then a hand picks it up and takes it out of view. Only a hand is needed. Then run:
   ```bash

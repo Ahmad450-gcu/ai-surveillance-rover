@@ -2,10 +2,10 @@
 
     python training/train_fight.py            # settings come from params.yaml (section "fight_model")
 
-Data   : data/rwf/pose/train  (RWF-2000 train, 1600 clips) -> 5-fold cross-validation chooses the alert rule
+Data   : data/validated/pose/rwf2000/train  (RWF-2000 train, 1600 clips) -> 5-fold cross-validation chooses the alert rule
                                                               (threshold + frames in a row), then the final model
                                                               is fitted on 90% with 10% dev for early stopping
-         data/rwf/pose/val    (RWF-2000 val, 400 clips)    -> final test, used once, never for training or tuning
+         data/validated/pose/rwf2000/val    (RWF-2000 val, 400 clips)    -> final test, used once, never for training or tuning
 Output : models/fight_gru.pt + models/fight_gru.json        (weights + settings/threshold/metrics)
          reports/fight_metrics.json, reports/*.png         (results, curves, confusion matrices)
 """
