@@ -1,0 +1,137 @@
+# MLOps Architecture – Production Pipeline
+
+This document describes the end-to-end, production-grade MLOps pipeline of the AI Surveillance Rover: how data flows from the rover's camera to an alert on the phone, how that data is validated, stored and monitored, and how models are retrained, registered and redeployed automatically when the data drifts.
+
+It follows three reference architectures:
+
+1. **Real-time ML system:** streaming → validation → prediction → storage → retraining → deployment
+2. **Development pipeline:** dataset → preprocessing → split → train → validate → test → metrics → persistence → Docker
+3. **Complete ML life cycle:** development → deployment → real-time production → retraining → deploy new model
+
+---
+
+## 1. System overview
+
+```mermaid
+flowchart LR
+  subgraph Edge["Edge: rover"]
+    CAM[Pi camera] --> AGENT[rover_agent.py<br/>MJPEG stream + drive API]
+    AGENT <--> ARD[Arduino<br/>motors, sonar, GPS]
+  end
+
+  subgraph Perception["Perception service"]
+    DET[detector<br/>YOLO11n-pose + ByteTrack<br/>objects every 3rd frame]
+  end
+
+  AGENT -- video --> DET
+  DET -- pose frames / objects / telemetry --> K[(Kafka)]
+
+  subgraph Stream["Stream processing: Spark Structured Streaming"]
+    V[validate<br/>schema, ranges, nulls,<br/>late data, duplicates] --> FE[feature engineering<br/>2 s pair windows]
+    FE --> P[score each activity]
+  end
+
+  K --> V
+  V -- invalid --> DLQ[(dead-letter topic<br/>+ rejected/ bucket)]
+  V -- valid --> LAKE[(MinIO data lake<br/>raw / validated / labelled / processed)]
+  P -- REST --> SERVE[FastAPI model serving<br/>ONNX models @champion]
+  P --> PG[(PostgreSQL<br/>predictions, alerts)]
+  P -- alerts topic --> BE[FastAPI backend<br/>auth, alerts, clips]
+  BE --> APP[Android app / dashboard]
+  APP -- label: real / false alarm --> BE
+
+  subgraph Ops["Monitoring"]
+    PROM[Prometheus] --> GRAF[Grafana]
+    PROM --> AM[Alertmanager]
+    DRIFT[drift job<br/>Evidently + PSI]
+  end
+  SERVE & BE & DET -.metrics.-> PROM
+  LAKE --> DRIFT -.drift score.-> PROM
+
+  subgraph Retrain["Retraining: Airflow"]
+    DAG[extract → validate → preprocess → train<br/>→ evaluate → compare with champion → register]
+  end
+  DRIFT -- drift above threshold --> DAG
+  LAKE --> DAG
+  DAG --> MLF[(MLflow tracking<br/>+ model registry)]
+  MLF -- new @champion --> SERVE
+```
+
+## 2. Components and how they map to the reference architectures
+
+| Reference box | Our component | Port | Status |
+|---|---|---|---|
+| Data sources (IoT / sensors) | Rover camera + telemetry; `run.py` turns video into structured records | – | ✅ |
+| Streaming ingestion | **Apache Kafka** (KRaft, single broker). Topics: `rover.pose_frames`, `rover.objects`, `rover.telemetry`, `predictions`, `alerts`, `dlq` | 9092 | ⬜ Phase 5 |
+| Stream processing & data quality | **Spark Structured Streaming**: schema validation, missing/late data (watermarking), deduplication, range checks, feature engineering, prediction | 7077 | ⬜ Phase 5 |
+| Invalid / rejected data | Dead-letter topic + `rejected/` bucket with the rejection reason | – | ⬜ Phase 5 |
+| Data lake | **MinIO** (S3-compatible). Zones: `raw/`, `validated/`, `labelled/`, `processed/`, partitioned by rover and date (Parquet). Also the DVC remote and MLflow artifact store | 9000 | ⬜ Phase 1–2 |
+| Operational store | **PostgreSQL**: alerts, predictions, telemetry, users; metadata for MLflow and Airflow | 5432 | ⬜ Phase 1 |
+| Model serving | **FastAPI** inference service, ONNX Runtime, loads `@champion` of each activity from the registry, hot-reloads | 8000 | ⬜ Phase 4 |
+| App backend | FastAPI backend (auth, alerts, clips, rover commands) | 8080 | ✅ (SQLite → PostgreSQL in Phase 1) |
+| Monitoring & alerting | **Prometheus**, **Grafana** (dashboards as code), **Alertmanager** | 9090 / 3000 / 9093 | ⬜ Phase 6 |
+| Data drift | Scheduled drift job: **Evidently** reports + Population Stability Index on features and prediction confidence; concept drift from the false-alarm rate of labelled alerts | – | ⬜ Phase 6 |
+| Retraining pipeline | **Apache Airflow** DAG per activity; triggers: weekly, enough new labelled data, or drift | 8080* | ⬜ Phase 7 |
+| Experiment tracking & registry | **MLflow** (PostgreSQL backend, MinIO artifacts); aliases `@challenger` → `@champion` | 5000 | 🟡 tracking only |
+| Data & model versioning | **DVC** pipeline (`dvc.yaml`), remote on MinIO | – | 🟡 2 stages |
+| Containerisation | Dockerfile per service, one `docker-compose.yml` with profiles | – | ⬜ Phase 1 |
+| CI/CD | **GitHub Actions**: lint + tests on every push/PR → build and publish images → deploy | – | 🟡 CI added |
+
+\* Airflow's web UI is mapped to another host port because the backend already uses 8080.
+
+## 3. Development pipeline (training)
+
+Every model is produced by a reproducible DVC pipeline, tracked in MLflow:
+
+```
+ingest → validate → extract_pose → preprocess → split (train/val/test) → train (k-fold CV, tuning)
+      → evaluate (fixed hold-out test set) → export ONNX → register in MLflow
+```
+
+- **Reproducibility:** each registered model is linked to its git commit, its DVC data version and its parameters (`params.yaml`).
+- **Metrics:** accuracy, precision, recall, F1, ROC-AUC and the confusion matrix, plus false alarms per hour on normal footage.
+- **Promotion gate:** a new model becomes `@champion` only if it beats the current champion on the same hold-out set.
+
+## 4. Real-time production flow
+
+1. The rover streams video to the perception service, which publishes per-frame pose and object records to Kafka.
+2. Spark validates each record. Invalid records go to the dead-letter topic. Valid ones are written to the lake and turned into 2-second windows.
+3. Each window is scored by every registered activity (ML models through the serving API; rule-based activities inline).
+4. Predictions go to PostgreSQL. Positive ones go to the `alerts` topic, from which the backend stores the alert, saves the clip and notifies the app.
+5. **Graceful degradation:** if the streaming stack is unavailable, the detector falls back to in-process inference so the rover keeps protecting the area.
+
+## 5. Monitoring, drift and retraining (the feedback loop)
+
+- **System health:** latency, throughput, errors, Kafka consumer lag, detector FPS.
+- **Model health:** prediction confidence distribution, alert rate per activity, false-alarm rate from user labels.
+- **Data drift:** the drift job compares recent feature distributions (keypoint confidence, body scale, motion, pair distance, image brightness) with the training reference. PSI above the threshold raises a Grafana alert and triggers the Airflow retraining DAG.
+- **Human in the loop:** labels from the app/dashboard (real / false alarm) and low-confidence windows (active learning) move clips into the `labelled/` zone.
+- **Retraining:** Airflow extracts the new data, retrains, evaluates against the champion and registers the result. Promotion to `@champion` makes the serving API reload the new model; a short shadow/canary window confirms it before full rollout, otherwise the previous version stays.
+
+## 6. Adding a new activity model
+
+All activities are declared in one place (`activities.yaml`, Phase 9): name, type (`rule` or `model`), MLflow model name, input window and threshold. From that entry the pipeline creates the training stage, the Airflow retraining DAG, the `/predict/<activity>` endpoint and the Grafana panels. Today *fighting* is a trained model; *loitering*, *unauthorised access* and *theft* are rules that use the same interface, so each can be replaced by a trained model later without changing the rest of the pipeline.
+
+## 7. Deployment targets
+
+Everything runs in Docker Compose, configured only through environment variables (`.env`, see `.env.example`; any `config.yaml` value can be overridden as `ROVER__<SECTION>__<KEY>`). The same images and compose file run:
+
+- **Locally** (default): one laptop runs the whole stack; GitHub Actions deploys through a self-hosted runner.
+- **On a cloud VM** (e.g. AWS EC2): install Docker, copy `.env`, `docker compose pull && docker compose up -d`. Switching only changes host names in `.env`.
+
+Compose profiles keep memory use manageable (`core`, `streaming`, `mlops`, `monitoring`), so an 8 GB machine can run the parts it needs and a 16 GB machine runs the full stack.
+
+## 8. Implementation phases
+
+| Phase | Content | Status |
+|---|---|---|
+| 0 | Repo setup: env-based config, lint, tests, CI | ✅ |
+| 1 | Docker foundation: PostgreSQL, MinIO, MLflow; backend on PostgreSQL | ⬜ |
+| 2 | Data layer: lake buckets, DVC remote on MinIO, dataset versioning, data validation | ⬜ |
+| 3 | Training pipeline: full DVC stages, MLflow registry, ONNX export, model tests | ⬜ |
+| 4 | Model serving API | ⬜ |
+| 5 | Streaming: Kafka + Spark Structured Streaming, dead-letter handling | ⬜ |
+| 6 | Monitoring: Prometheus, Grafana, Alertmanager, drift detection | ⬜ |
+| 7 | Automated retraining with Airflow, feedback labels, champion/challenger | ⬜ |
+| 8 | CD: image publishing, deployment, model rollout | ⬜ |
+| 9 | Activity plugin framework, final docs and demo | ⬜ |

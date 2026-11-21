@@ -1,0 +1,13 @@
+# torch 2.2.2: last release with Intel-Mac wheels; also installs on Windows/Linux (Python 3.10-3.12)
+torch==2.2.2
+torchvision==0.17.2
+numpy<2
+ultralytics==8.4.189
+opencv-python<4.11
+lap>=0.5.12
+pyyaml
+requests
+# backend + dashboard
+fastapi==0.162.0
+uvicorn[standard]==0.54.0
+pyjwt==2.15.1
