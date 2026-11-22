@@ -45,7 +45,7 @@ x-airflow: &airflow
   build:
     context: .
     dockerfile: docker/airflow/Dockerfile
-  image: ${IMAGE_PREFIX:-rover}/airflow:${IMAGE_TAG:-latest}
+  image: ${IMAGE_PREFIX:-rover}-airflow:${IMAGE_TAG:-latest}
   profiles: ["mlops"]
   environment: *airflow-env
   volumes:
@@ -115,7 +115,7 @@ services:
     build:
       context: .
       dockerfile: docker/mlflow/Dockerfile
-    image: ${IMAGE_PREFIX:-rover}/mlflow:${IMAGE_TAG:-latest}
+    image: ${IMAGE_PREFIX:-rover}-mlflow:${IMAGE_TAG:-latest}
     <<: *restart
     depends_on:
       postgres:
@@ -146,7 +146,7 @@ services:
     build:
       context: .
       dockerfile: docker/backend/Dockerfile
-    image: ${IMAGE_PREFIX:-rover}/backend:${IMAGE_TAG:-latest}
+    image: ${IMAGE_PREFIX:-rover}-backend:${IMAGE_TAG:-latest}
     <<: *restart
     depends_on:
       postgres:
@@ -166,7 +166,7 @@ services:
     build:
       context: .
       dockerfile: docker/serving/Dockerfile
-    image: ${IMAGE_PREFIX:-rover}/serving:${IMAGE_TAG:-latest}
+    image: ${IMAGE_PREFIX:-rover}-serving:${IMAGE_TAG:-latest}
     <<: *restart
     depends_on:
       mlflow:
@@ -176,6 +176,7 @@ services:
       SERVING_MODELS: ${SERVING_MODELS:-fight=fight-detector}     # activity=registered-model, comma separated
       MODEL_SOURCE: ${MODEL_SOURCE:-registry}                     # registry | local (./models mounted below)
       MODEL_ALIAS: ${MODEL_ALIAS:-champion}
+      SHADOW_ALIAS: ${SHADOW_ALIAS-challenger}                    # scored next to the champion, never returned ("" = off)
       MODEL_DIR: /models
       RELOAD_SECONDS: ${RELOAD_SECONDS:-60}                       # promotion / rollback reaches serving within this
       SERVING_ADMIN_TOKEN: ${SERVING_ADMIN_TOKEN:-}
@@ -240,7 +241,7 @@ services:
     build:
       context: .
       dockerfile: docker/spark/Dockerfile
-    image: ${IMAGE_PREFIX:-rover}/spark:${IMAGE_TAG:-latest}
+    image: ${IMAGE_PREFIX:-rover}-spark:${IMAGE_TAG:-latest}
     profiles: ["streaming"]
     <<: *restart
     depends_on:
@@ -275,7 +276,7 @@ services:
 
   # ---------------- alert bridge: topic rover.alerts -> backend ----------------
   alert-bridge:
-    image: ${IMAGE_PREFIX:-rover}/spark:${IMAGE_TAG:-latest}
+    image: ${IMAGE_PREFIX:-rover}-spark:${IMAGE_TAG:-latest}
     profiles: ["streaming"]
     <<: *restart
     depends_on:
@@ -371,7 +372,7 @@ services:
 
   # ---------------- drift monitor: data / prediction / concept drift + Alertmanager webhook ----------------
   drift-monitor:
-    image: ${IMAGE_PREFIX:-rover}/spark:${IMAGE_TAG:-latest}
+    image: ${IMAGE_PREFIX:-rover}-spark:${IMAGE_TAG:-latest}
     profiles: ["monitoring"]
     <<: *restart
     depends_on:

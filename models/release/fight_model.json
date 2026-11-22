@@ -1,0 +1,111 @@
+{
+  "arch": {
+    "type": "tcn",
+    "channels": 32,
+    "levels": 2,
+    "kernel": 3,
+    "dropout": 0.195
+  },
+  "n_params": 20449,
+  "window": 20,
+  "fps": 10.0,
+  "threshold": 0.67,
+  "consecutive": 2,
+  "pair_gap": 1.0,
+  "proximity": 5.0,
+  "min_cover": 0.3,
+  "trained_on": "RWF-2000 train split (pose from YOLO11n-pose + ByteTrack)",
+  "data_version": {
+    "dataset_sha256": "227c01e017ee3df8753388f81bf0ab65705f5009f3f0e29f7db18bacd81a2d50",
+    "features_md5": "300481f07a487de35801160aa522b016.dir"
+  },
+  "clips": {
+    "train": 1600,
+    "fit": 1440,
+    "dev": 160,
+    "test": 400,
+    "folds": 5
+  },
+  "windows": 10510,
+  "augment": {
+    "noise": 0.115,
+    "joint_dropout": 0.185,
+    "time_stretch": 0.25
+  },
+  "cv_with_pair": {
+    "accuracy": 0.7064,
+    "precision": 0.7269,
+    "recall": 0.7765,
+    "f1": 0.7509,
+    "tp": 330,
+    "tn": 197,
+    "fp": 124,
+    "fn": 95,
+    "roc_auc": 0.7551
+  },
+  "cv_fold_dev_auc": [
+    0.8189,
+    0.8597,
+    0.873,
+    0.8711,
+    0.8507
+  ],
+  "test_learned": {
+    "accuracy": 0.72,
+    "precision": 0.8056,
+    "recall": 0.58,
+    "f1": 0.6744,
+    "tp": 116,
+    "tn": 172,
+    "fp": 28,
+    "fn": 84,
+    "roc_auc": 0.7209
+  },
+  "test_rules": {
+    "accuracy": 0.6375,
+    "precision": 0.8161,
+    "recall": 0.355,
+    "f1": 0.4948,
+    "tp": 71,
+    "tn": 184,
+    "fp": 16,
+    "fn": 129
+  },
+  "coverage": {
+    "test_clips": 400,
+    "with_close_pair": 220,
+    "fight_with_pair": 139,
+    "nonfight_with_pair": 81
+  },
+  "test_learned_with_pair": {
+    "accuracy": 0.7682,
+    "precision": 0.8056,
+    "recall": 0.8345,
+    "f1": 0.8198,
+    "tp": 116,
+    "tn": 53,
+    "fp": 28,
+    "fn": 23,
+    "roc_auc": 0.8037
+  },
+  "test_rules_with_pair": {
+    "accuracy": 0.6,
+    "precision": 0.8072,
+    "recall": 0.482,
+    "f1": 0.6036,
+    "tp": 67,
+    "tn": 65,
+    "fp": 16,
+    "fn": 72
+  },
+  "onnx_max_diff": 1.430511474609375e-06,
+  "git_commit": "320d136311d6f3f7539d853bfe25bdbae229a0e2",
+  "train_minutes": 10.1,
+  "created": "2026-11-22 20:45",
+  "registry": {
+    "model": "fight-detector",
+    "version": 4,
+    "alias": "champion",
+    "run_id": "1c7baaf43b18494b9b49d01ef4210a5c"
+  }
+}

@@ -194,6 +194,21 @@ def model():
          "share above threshold")], "percentunit"), 12, 7)
     L.add(stat("Model in production", [('serving_model_info', "{{activity}} v{{version}} ({{arch}})")],
                text_mode="name"), 12, 7)
+    L.row("Model rollout: the challenger scored in shadow on live traffic")
+    L.add(stat("Shadow model", [('serving_shadow_model_info', "{{activity}} v{{version}} ({{arch}})")],
+               text_mode="name",
+               desc="The registry's @challenger, scored on every request next to the champion; never answers."), 6, 7)
+    L.add(stat("Agreement with the champion (1 h)", [
+        ('sum(increase(serving_shadow_agreement_total{agree="true"}[1h])) / '
+         'clamp_min(sum(increase(serving_shadow_windows_total[1h])), 1)', "")], "percentunit",
+        steps=[(None, "red"), (0.9, "orange"), (0.97, "green")],
+        desc="Share of windows where both models make the same decision (each with its own threshold)."), 6, 7)
+    L.add(timeseries("Windows above threshold: champion vs shadow", [
+        ('sum(rate(serving_above_threshold_total[5m])) / clamp_min(sum(rate(serving_windows_total[5m])), 1e-9)',
+         "champion"),
+        ('sum(rate(serving_shadow_above_threshold_total[5m])) / '
+         'clamp_min(sum(rate(serving_shadow_windows_total[5m])), 1e-9)', "shadow")], "percentunit",
+        desc="A challenger that would raise many more alerts than the champion shows here before promotion."), 12, 7)
     L.row("Concept drift (human feedback)")
     L.add(stat("False-alarm rate (labelled alerts, 7 d)", [("rover_false_alarm_rate", "")], "percentunit",
                steps=[(None, "green"), (0.3, "orange"), (0.5, "red")]), 8, 6)

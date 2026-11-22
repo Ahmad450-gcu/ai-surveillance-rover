@@ -1,0 +1,22 @@
+#cloud-config
+# First boot of the rover server (rendered by Terraform: main.tf -> templatefile). Docker and Compose come from
+# Ubuntu's own package repository; the project is cloned to /opt/rover, where deploy/deploy.sh runs.
+package_update: true
+package_upgrade: true
+packages:
+  - docker.io
+  - docker-compose-v2
+  - git
+  - curl
+  - python3
+
+runcmd:
+  - [bash, -c, "fallocate -l ${swap_gb}G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile && echo '/swapfile none swap sw 0 0' >> /etc/fstab"]
+  - [bash, -c, "echo 'vm.swappiness=10' > /etc/sysctl.d/99-rover.conf && sysctl --system"]
+  - [systemctl, enable, --now, docker]
+  - [usermod, -aG, docker, "${deploy_user}"]
+  - [git, clone, "${repo_url}", /opt/rover]
+  - [chown, -R, "${deploy_user}:${deploy_user}", /opt/rover]
+  - [bash, -c, "mkdir -p /opt/rover/alerts && chown ${deploy_user}: /opt/rover/alerts"]
+
+final_message: "rover server ready after $UPTIME s: create /opt/rover/.env, then deploy (docs/DEPLOYMENT.md)"

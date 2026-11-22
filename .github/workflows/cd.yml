@@ -1,0 +1,161 @@
+name: CD
+
+# Continuous delivery: every commit on main that passed CI is published as Docker images and, if a deployment
+# target is configured, deployed (docs/DEPLOYMENT.md).
+#
+#   images   ghcr.io/<owner>/rover-<service>:sha-<7 chars> and :latest (GitHub Container Registry, no setup needed)
+#            docker.io/<user>/rover-<service>:...              also, once the secrets DOCKERHUB_USERNAME and
+#                                                              DOCKERHUB_TOKEN exist (Settings -> Secrets -> Actions)
+#            a tag v1.2.3 also publishes :1.2.3
+#   deploy   repository variable DEPLOY_TARGET (Settings -> Variables -> Actions):
+#              local   the laptop, through a self-hosted runner with the label "rover" (DEPLOY_DIR = its clone)
+#              ec2     an AWS EC2 server over SSH (EC2_HOST, secret EC2_SSH_KEY; deploy/aws creates it)
+#              unset   publish only
+#            Both run deploy/deploy.sh <commit> on the target: pull, start, health checks, smoke tests, and an
+#            automatic rollback to the previous release if any of them fails.
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Commit, branch or tag to publish and deploy
+        default: main
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: cd
+  cancel-in-progress: false
+
+jobs:
+  meta:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.m.outputs.sha }}
+      short: ${{ steps.m.outputs.short }}
+      owner: ${{ steps.m.outputs.owner }}
+      version: ${{ steps.m.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || inputs.ref || github.sha }}
+      - id: m
+        run: |
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "short=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
+          echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_REF_TYPE" = tag ]; then echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"; fi
+
+  publish:
+    needs: meta
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        service: [backend, serving, mlflow, spark, airflow]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.meta.outputs.sha }}
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Image names and tags
+        id: tags
+        env:
+          DH_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+          DH_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          OWNER: ${{ needs.meta.outputs.owner }}
+          SHORT: ${{ needs.meta.outputs.short }}
+          VERSION: ${{ needs.meta.outputs.version }}
+          SERVICE: ${{ matrix.service }}
+        run: |
+          names="ghcr.io/$OWNER/rover-$SERVICE"
+          if [ -n "$DH_USER" ] && [ -n "$DH_TOKEN" ]; then
+            echo "$DH_TOKEN" | docker login docker.io -u "$DH_USER" --password-stdin
+            names="$names docker.io/$DH_USER/rover-$SERVICE"
+          fi
+          tags=""
+          for n in $names; do
+            tags="$tags,$n:sha-$SHORT,$n:latest"
+            if [ -n "$VERSION" ]; then tags="$tags,$n:$VERSION"; fi
+          done
+          echo "tags=${tags#,}" >> "$GITHUB_OUTPUT"
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/${{ matrix.service }}/Dockerfile
+          push: true
+          provenance: false
+          tags: ${{ steps.tags.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ needs.meta.outputs.sha }}
+            org.opencontainers.image.title=rover-${{ matrix.service }}
+
+  deploy-local:
+    needs: [meta, publish]
+    if: vars.DEPLOY_TARGET == 'local'
+    runs-on: [self-hosted, rover]
+    environment: production-local
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Deploy ${{ needs.meta.outputs.short }}
+        shell: bash
+        env:
+          DEPLOY_DIR: ${{ vars.DEPLOY_DIR }}
+          SHA: ${{ needs.meta.outputs.sha }}
+        run: |
+          [ -n "$DEPLOY_DIR" ] || { echo "Set the repository variable DEPLOY_DIR (the deployment clone)"; exit 1; }
+          git -C "$DEPLOY_DIR" fetch --quiet origin
+          git -C "$DEPLOY_DIR" checkout --quiet --detach "$SHA"
+          bash "$DEPLOY_DIR/deploy/deploy.sh" "$SHA"
+
+  deploy-ec2:
+    needs: [meta, publish]
+    if: vars.DEPLOY_TARGET == 'ec2'
+    runs-on: ubuntu-latest
+    environment:
+      name: production-ec2
+      url: http://${{ vars.EC2_HOST }}:8080
+    steps:
+      - name: SSH access
+        env:
+          KEY: ${{ secrets.EC2_SSH_KEY }}
+          HOST: ${{ vars.EC2_HOST }}
+        run: |
+          [ -n "$HOST" ] && [ -n "$KEY" ] || { echo "Set the variable EC2_HOST and the secret EC2_SSH_KEY"; exit 1; }
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/deploy && chmod 600 ~/.ssh/deploy
+          ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      - name: Deploy ${{ needs.meta.outputs.short }}
+        env:
+          HOST: ${{ vars.EC2_HOST }}
+          USER_AT: ${{ vars.EC2_USER || 'ubuntu' }}
+          DIR: ${{ vars.DEPLOY_DIR || '/opt/rover' }}
+          SHA: ${{ needs.meta.outputs.sha }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          remote() { ssh -i ~/.ssh/deploy -o BatchMode=yes "$USER_AT@$HOST" "$@"; }
+          echo "$TOKEN" | remote "docker login ghcr.io -u $ACTOR --password-stdin"
+          remote "cd '$DIR' && git fetch --quiet origin && git checkout --quiet --detach $SHA && bash deploy/deploy.sh $SHA"

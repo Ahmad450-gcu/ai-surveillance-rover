@@ -19,12 +19,16 @@ Settings (environment variables, see .env.example):
     MLFLOW_TRACKING_URI, MODEL_ALIAS (champion), MODEL_DIR (local source: <activity>_model.onnx + .json)
     RELOAD_SECONDS     how often to look for a new champion (default 60, 0 = never)
     SERVING_ADMIN_TOKEN  if set, /admin/reload needs "Authorization: Bearer <token>"
+    MODEL_FALLBACK_DIR the release model in the image (models/release), served while the registry has no champion
+    SHADOW_ALIAS       registry alias scored in the shadow of the champion (default "challenger", "" = off)
 """
 import base64
 import hmac
 import logging
 import os
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 
 import numpy as np
@@ -56,6 +60,17 @@ SCORES = Histogram("serving_probability", "Predicted probability per window (pre
 ABOVE = Counter("serving_above_threshold_total", "Windows scored above the model's threshold", ["activity"])
 MODEL_INFO = Gauge("serving_model_info", "Model currently served (value 1)", ["activity", "version", "arch"])
 RELOADS = Counter("serving_model_reloads_total", "Hot reloads after the registry alias moved", ["activity"])
+# shadow model (the challenger): scored on the same windows after the response, never returned
+SHADOW_INFO = Gauge("serving_shadow_model_info", "Model scored in shadow (value 1)", ["activity", "version", "arch"])
+SHADOW_WINDOWS = Counter("serving_shadow_windows_total", "Windows also scored by the shadow model", ["activity"])
+SHADOW_AGREE = Counter("serving_shadow_agreement_total", "Shadow vs served decision per window (each model with "
+                       "its own threshold)", ["activity", "agree"])
+SHADOW_ABOVE = Counter("serving_shadow_above_threshold_total", "Windows above the shadow model's threshold",
+                       ["activity"])
+SHADOW_DIFF = Histogram("serving_shadow_abs_diff", "|shadow probability - served probability| per window",
+                        ["activity"], buckets=(.01, .02, .05, .1, .2, .3, .5, 1))
+SHADOW_DROPPED = Counter("serving_shadow_dropped_total", "Windows not shadow-scored because it was busy", ["activity"])
+SHADOW_MAX_PENDING = 8                  # shadow scoring never delays or queues up behind real requests
 
 
 def parse_models(text):
@@ -70,7 +85,9 @@ def make_store():
                       alias=os.environ.get("MODEL_ALIAS", "champion"),
                       model_dir=os.environ.get("MODEL_DIR", "models"),
                       cache_dir=os.environ.get("MODEL_CACHE", "/tmp/serving-cache"),
-                      threads=int(os.environ.get("ORT_THREADS", "2")))
+                      threads=int(os.environ.get("ORT_THREADS", "2")),
+                      fallback_dir=os.environ.get("MODEL_FALLBACK_DIR") or None,
+                      shadow_alias=os.environ.get("SHADOW_ALIAS", "challenger"))
 
 
 _published = {}                         # activity -> labels currently exported in serving_model_info
@@ -83,6 +100,49 @@ def publish_model_info(store, changed):
             MODEL_INFO.remove(*_published[activity])
         _published[activity] = (activity, str(m.version), m.meta["arch"].get("type", "gru"))
         MODEL_INFO.labels(*_published[activity]).set(1)
+
+
+def publish_shadow_info(store):
+    SHADOW_INFO.clear()
+    for activity, m in store.shadow.items():
+        SHADOW_INFO.labels(activity, str(m.version), m.meta["arch"].get("type", "gru")).set(1)
+
+
+class ShadowScorer:
+    """Scores windows with the shadow model in one background thread, after the champion's response."""
+
+    def __init__(self):
+        self.pool = ThreadPoolExecutor(1, thread_name_prefix="shadow")
+        self.pending = 0
+        self.lock = threading.Lock()
+
+    def submit(self, activity, shadow, x, probs, threshold):
+        with self.lock:
+            if self.pending >= SHADOW_MAX_PENDING:
+                SHADOW_DROPPED.labels(activity).inc(len(x))
+                return
+            self.pending += 1
+        self.pool.submit(self._score, activity, shadow, x, probs, threshold)
+
+    def _score(self, activity, shadow, x, probs, threshold):
+        try:
+            ps = sigmoid(shadow.predict(x))
+            above = ps >= float(shadow.meta["threshold"])
+            agree = above == (probs >= threshold)
+            SHADOW_WINDOWS.labels(activity).inc(len(x))
+            SHADOW_AGREE.labels(activity, "true").inc(int(agree.sum()))
+            SHADOW_AGREE.labels(activity, "false").inc(int((~agree).sum()))
+            SHADOW_ABOVE.labels(activity).inc(int(above.sum()))
+            for d in np.abs(ps - probs):
+                SHADOW_DIFF.labels(activity).observe(float(d))
+        except Exception as e:                  # noqa: BLE001 - the shadow never affects serving
+            log.warning("shadow scoring failed: %s: %s", type(e).__name__, e)
+        finally:
+            with self.lock:
+                self.pending -= 1
+
+    def flush(self):
+        self.pool.submit(lambda: None).result()      # one worker: returns once everything queued before is done
 
 
 def create_app(store=None, reload_seconds=None):
@@ -105,6 +165,7 @@ def create_app(store=None, reload_seconds=None):
 
     app = FastAPI(title="Rover model serving", version="1.0", lifespan=lifespan)
     app.state.store = store
+    app.state.shadow = shadow = ShadowScorer()
 
     class PredictRequest(BaseModel):
         instances: list[list[list[float]]] | None = Field(None, description="windows, each T x F features (JSON)")
@@ -146,7 +207,7 @@ def create_app(store=None, reload_seconds=None):
     @app.get("/v1/models")
     def models():
         return {"models": [m.info() for m in store.loaded.values()], "errors": store.errors,
-                "reloads": store.reloads}
+                "reloads": store.reloads, "shadow": [m.info() for m in store.shadow.values()]}
 
     @app.get("/v1/models/{activity}")
     def model(activity: str):
@@ -176,6 +237,9 @@ def create_app(store=None, reload_seconds=None):
         ABOVE.labels(activity).inc(int((probs >= thr).sum()))
         for p in probs:
             SCORES.labels(activity).observe(float(p))
+        s = store.shadow.get(activity)
+        if s is not None and (s.window, s.n_feat) == (m.window, m.n_feat):
+            shadow.submit(activity, s, x, probs, thr)
         return {"activity": activity, "model_version": m.version, "threshold": thr,
                 "logits": logits.round(5).tolist(), "probabilities": probs.round(5).tolist(),
                 "above_threshold": (probs >= thr).tolist()}
@@ -187,10 +251,12 @@ def create_app(store=None, reload_seconds=None):
             raise HTTPException(401, "invalid admin token")
         changed = store.refresh()
         on_change(changed)
-        return {"changed": changed, "models": [m.info() for m in store.loaded.values()], "errors": store.errors}
+        return {"changed": changed, "models": [m.info() for m in store.loaded.values()], "errors": store.errors,
+                "shadow": [m.info() for m in store.shadow.values()]}
 
     @app.get("/metrics")
     def metrics():
+        publish_shadow_info(store)
         return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
     return app

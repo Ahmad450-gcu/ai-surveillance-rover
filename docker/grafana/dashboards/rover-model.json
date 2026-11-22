@@ -657,11 +657,206 @@
   {
    "id": 13,
    "type": "row",
-   "title": "Concept drift (human feedback)",
+   "title": "Model rollout: the challenger scored in shadow on live traffic",
    "collapsed": false,
    "gridPos": {
     "x": 0,
     "y": 32,
+    "w": 24,
+    "h": 1
+   }
+  },
+  {
+   "type": "stat",
+   "title": "Shadow model",
+   "description": "The registry's @challenger, scored on every request next to the champion; never answers.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "serving_shadow_model_info",
+     "legendFormat": "{{activity}} v{{version}} ({{arch}})",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "background",
+    "graphMode": "none",
+    "textMode": "name",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    }
+   },
+   "id": 14,
+   "gridPos": {
+    "x": 0,
+    "y": 33,
+    "w": 6,
+    "h": 7
+   }
+  },
+  {
+   "type": "stat",
+   "title": "Agreement with the champion (1 h)",
+   "description": "Share of windows where both models make the same decision (each with its own threshold).",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum(increase(serving_shadow_agreement_total{agree=\"true\"}[1h])) / clamp_min(sum(increase(serving_shadow_windows_total[1h])), 1)",
+     "legendFormat": "",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percentunit",
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "red",
+        "value": null
+       },
+       {
+        "color": "orange",
+        "value": 0.9
+       },
+       {
+        "color": "green",
+        "value": 0.97
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "background",
+    "graphMode": "none",
+    "textMode": "auto",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    }
+   },
+   "id": 15,
+   "gridPos": {
+    "x": 6,
+    "y": 33,
+    "w": 6,
+    "h": 7
+   }
+  },
+  {
+   "type": "timeseries",
+   "title": "Windows above threshold: champion vs shadow",
+   "description": "A challenger that would raise many more alerts than the champion shows here before promotion.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum(rate(serving_above_threshold_total[5m])) / clamp_min(sum(rate(serving_windows_total[5m])), 1e-9)",
+     "legendFormat": "champion",
+     "refId": "A"
+    },
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum(rate(serving_shadow_above_threshold_total[5m])) / clamp_min(sum(rate(serving_shadow_windows_total[5m])), 1e-9)",
+     "legendFormat": "shadow",
+     "refId": "B"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percentunit",
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 10,
+      "showPoints": "never"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   },
+   "id": 16,
+   "gridPos": {
+    "x": 12,
+    "y": 33,
+    "w": 12,
+    "h": 7
+   }
+  },
+  {
+   "id": 17,
+   "type": "row",
+   "title": "Concept drift (human feedback)",
+   "collapsed": false,
+   "gridPos": {
+    "x": 0,
+    "y": 40,
     "w": 24,
     "h": 1
    }
@@ -721,10 +916,10 @@
      "values": false
     }
    },
-   "id": 14,
+   "id": 18,
    "gridPos": {
     "x": 0,
-    "y": 33,
+    "y": 41,
     "w": 8,
     "h": 6
    }
@@ -776,10 +971,10 @@
      "values": false
     }
    },
-   "id": 15,
+   "id": 19,
    "gridPos": {
     "x": 8,
-    "y": 33,
+    "y": 41,
     "w": 8,
     "h": 6
    }
@@ -835,10 +1030,10 @@
      "values": false
     }
    },
-   "id": 16,
+   "id": 20,
    "gridPos": {
     "x": 16,
-    "y": 33,
+    "y": 41,
     "w": 8,
     "h": 6
    }
@@ -871,10 +1066,10 @@
    "options": {
     "showHeader": true
    },
-   "id": 17,
+   "id": 21,
    "gridPos": {
     "x": 0,
-    "y": 39,
+    "y": 47,
     "w": 12,
     "h": 7
    }
@@ -907,10 +1102,10 @@
    "options": {
     "showHeader": true
    },
-   "id": 18,
+   "id": 22,
    "gridPos": {
     "x": 12,
-    "y": 39,
+    "y": 47,
     "w": 12,
     "h": 7
    }

@@ -12,6 +12,10 @@ COPY serving/requirements.txt serving/requirements.txt
 RUN pip install -r serving/requirements.txt
 
 COPY serving/ serving/
+# the release model (python -m mlops.registry release): served only while the registry has no champion, e.g. on a
+# freshly deployed server, so a new deployment answers from the first minute
+COPY models/release/ models/release/
+ENV MODEL_FALLBACK_DIR=/app/models/release
 
 RUN useradd --create-home --uid 1000 app && mkdir -p /cache /models && chown -R app /app /cache
 USER app

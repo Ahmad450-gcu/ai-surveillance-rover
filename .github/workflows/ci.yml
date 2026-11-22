@@ -57,4 +57,20 @@ jobs:
         run: docker compose --profile streaming --profile mlops build backend mlflow serving spark airflow-scheduler
       - name: Retraining DAG imports and has the intended shape (inside the Airflow image)
         run: |
-          docker run --rm -v "$PWD:/opt/rover:ro" -w /tmp -e AIRFLOW__CORE__LOAD_EXAMPLES=false rover/airflow:latest             bash -c "airflow db migrate > /dev/null && python -m pytest /opt/rover/tests/test_dag.py -q -p no:cacheprovider"
+          docker run --rm -v "$PWD:/opt/rover:ro" -w /tmp -e AIRFLOW__CORE__LOAD_EXAMPLES=false rover-airflow:latest             bash -c "airflow db migrate > /dev/null && python -m pytest /opt/rover/tests/test_dag.py -q -p no:cacheprovider"
+
+  deploy-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shell scripts (deploy, container init)
+        run: shellcheck -S warning deploy/*.sh docker/*/*.sh
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+      - name: Terraform (EC2 target) is formatted and valid
+        working-directory: deploy/aws
+        run: |
+          terraform fmt -check -diff
+          terraform init -backend=false -input=false
+          terraform validate

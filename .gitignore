@@ -34,3 +34,12 @@ documents/
 
 # report sources (report text, university template, figures): not part of the code
 docs/report_src/
+
+# deployment state on a deployed machine (deploy/deploy.sh)
+.deploy/
+# Terraform (deploy/aws): provider cache, state (holds resource details) and your variables
+deploy/aws/.terraform/
+deploy/aws/.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+deploy/aws/terraform.tfvars

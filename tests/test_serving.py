@@ -40,12 +40,14 @@ class FakeRegistry:
     def __init__(self, versions):
         self.versions = versions            # version -> folder
         self.champion = None
+        self.challenger = None
         self.down = False
 
     def version_by_alias(self, name, alias):
         if self.down:
             raise OSError("registry unreachable")
-        return None if self.champion is None else (self.champion, f"run{self.champion}")
+        v = self.champion if alias == "champion" else self.challenger
+        return None if v is None else (v, f"run{v}")
 
     def download(self, run_id, artifact, dest):
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -190,3 +192,69 @@ def test_detector_survives_serving_outage(tmp_path):
     det.model = down
     k, b = np.zeros((T, 17, 3), np.float32), np.tile(np.array([0, 0, 10, 20], np.float32), (T, 1))
     assert det.judge([(k, b, k, b)], t=1.0) is None and det.failed_at == 1.0
+
+
+def metric(client, name, **labels):
+    want = ",".join(f'{k}="{v}"' for k, v in sorted(labels.items()))
+    for ln in client.get("/metrics").text.splitlines():
+        if ln.startswith(f"{name}{{{want}}}"):
+            return float(ln.split()[-1])
+    return 0.0
+
+
+def test_bundled_release_model_until_the_registry_has_a_champion(tmp_path):
+    bundle = tmp_path / "release"
+    src = export(tmp_path / "rel", "tcn", 3)
+    bundle.mkdir()
+    for f in ("onnx", "json"):
+        shutil.copy(src / f"model.{f}", bundle / f"fight_model.{f}")
+    reg = FakeRegistry({"1": export(tmp_path / "v1", "gru", 1)})
+    reg.down = True                                                   # fresh server: registry not up yet
+    store = ModelStore({"fight": "fight-detector"}, source="registry", registry_uri="http://unused",
+                       cache_dir=tmp_path / "cache", fallback_dir=bundle)
+    store.registry = reg
+    with TestClient(create_app(store, reload_seconds=0)) as client:
+        assert client.get("/ready").json()["ready"]                    # it has a model to serve
+        assert client.get("/v1/models/fight").json()["source"] == "bundled"
+        assert "bundled" in client.get("/v1/models").json()["errors"]["fight"]
+        assert client.post("/v1/models/fight/predict", json={"instances": x_batch().tolist()}).status_code == 200
+        reg.down = False                                               # registry up, still no champion
+        assert client.post("/admin/reload").json()["changed"] == []
+        reg.champion = "1"                                             # first champion registered
+        assert client.post("/admin/reload").json()["changed"] == ["fight"]
+        info = client.get("/v1/models/fight").json()
+        assert (info["source"], info["version"], info["arch"]) == ("registry", "1", "gru")
+        assert client.get("/v1/models").json()["errors"] == {}
+        reg.down = True                                                # outage: keeps v1, not the bundle
+        client.post("/admin/reload")
+        assert client.get("/v1/models/fight").json()["source"] == "registry"
+
+
+def test_challenger_is_scored_in_shadow_but_never_answers(tmp_path):
+    reg = FakeRegistry({"1": export(tmp_path / "v1", "tcn", 1), "2": export(tmp_path / "v2", "tcn", 2, 0.6)})
+    reg.champion, reg.challenger = "1", "2"
+    store = ModelStore({"fight": "fight-detector"}, source="registry", registry_uri="http://unused",
+                       cache_dir=tmp_path / "cache", shadow_alias="challenger")
+    store.registry = reg
+    app = create_app(store, reload_seconds=0)
+    with TestClient(app) as client:
+        assert [m["version"] for m in client.get("/v1/models").json()["shadow"]] == ["2"]
+        before = metric(client, "serving_shadow_windows_total", activity="fight")
+        agree0 = sum(metric(client, "serving_shadow_agreement_total", activity="fight", agree=a)
+                     for a in ("true", "false"))
+        x = x_batch(5)
+        r = client.post("/v1/models/fight/predict", json={"instances": x.tolist()}).json()
+        assert r["model_version"] == "1"                                # the champion answers
+        assert np.allclose(r["logits"], OnnxModel(tmp_path / "v1" / "model.onnx")(x), atol=1e-4)
+        app.state.shadow.flush()
+        assert metric(client, "serving_shadow_windows_total", activity="fight") - before == 5
+        agree1 = sum(metric(client, "serving_shadow_agreement_total", activity="fight", agree=a)
+                     for a in ("true", "false"))
+        assert agree1 - agree0 == 5
+        assert metric(client, "serving_shadow_model_info", activity="fight", arch="tcn", version="2") == 1
+        reg.champion = "2"                                              # promoted: nothing left to shadow
+        assert client.post("/admin/reload").json()["shadow"] == []
+        assert metric(client, "serving_shadow_model_info", activity="fight", arch="tcn", version="2") == 0
+        reg.champion, reg.challenger = "2", "9"                         # broken challenger: champion unaffected
+        client.post("/admin/reload")
+        assert client.post("/v1/models/fight/predict", json={"instances": x.tolist()}).json()["model_version"] == "2"

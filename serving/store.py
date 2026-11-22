@@ -5,6 +5,12 @@ Sources
     registry   the version with alias @champion of the registered model, downloaded over MLflow's REST API
                (no mlflow package needed: the image stays small)
     local      <MODEL_DIR>/<activity>_model.onnx + .json (offline use, or a cloud VM without MLflow)
+    bundled    the release model baked into the image (models/release/): used only while the registry has no
+               champion (a freshly deployed server) or can't be reached at start-up; replaced as soon as it has one
+
+Shadow model (model rollout): with a shadow alias (default "challenger"), the registry's challenger is loaded next to
+the champion. The API scores every request with both but only answers with the champion; the app records how often
+they agree (Prometheus), so a challenger is seen on live traffic before anyone promotes it.
 
 A model version is downloaded once into a cache folder; a reload only swaps a reference, so in-flight requests
 finish on the model they started with.
@@ -31,7 +37,7 @@ class LoadedModel:
     session: object                     # onnxruntime.InferenceSession
     input_name: str
     meta: dict
-    source: str                         # "registry" | "local"
+    source: str                         # "registry" | "local" | "bundled"
     version: str | None = None          # registry version
     run_id: str | None = None
     loaded_at: float = field(default_factory=time.time)
@@ -98,7 +104,7 @@ class MlflowRegistry:
 
 class ModelStore:
     def __init__(self, models, source="registry", registry_uri=None, alias="champion", model_dir="models",
-                 cache_dir="/tmp/serving-cache", threads=2):
+                 cache_dir="/tmp/serving-cache", threads=2, fallback_dir=None, shadow_alias=None):
         self.models = dict(models)                  # activity -> registered model name
         self.source = source
         self.alias = alias
@@ -106,19 +112,21 @@ class ModelStore:
         self.model_dir = Path(model_dir)
         self.cache_dir = Path(cache_dir)
         self.threads = threads
+        self.fallback_dir = Path(fallback_dir) if fallback_dir else None
+        self.shadow_alias = shadow_alias or None
         self.loaded = {}                            # activity -> LoadedModel
+        self.shadow = {}                            # activity -> LoadedModel scored in the shadow of the champion
         self.errors = {}                            # activity -> last load error
         self.reloads = 0
         self._lock = threading.Lock()               # one reload at a time; readers never wait
         self._stop = threading.Event()
 
     # ------------------------------------------------------------------ loading
-    def _from_registry(self, activity, name):
-        found = self.registry.version_by_alias(name, self.alias)
+    def _from_registry(self, activity, name, alias, current):
+        found = self.registry.version_by_alias(name, alias)
         if found is None:
-            raise LookupError(f"{name}: no version has the alias @{self.alias}")
+            raise LookupError(f"{name}: no version has the alias @{alias}")
         version, run_id = found
-        current = self.loaded.get(activity)
         if current and current.source == "registry" and current.version == version:
             return None                             # unchanged
         folder = self.cache_dir / name / f"v{version}"
@@ -126,22 +134,51 @@ class ModelStore:
             if not (folder / f).exists():
                 self.registry.download(run_id, f"{ARTIFACT_DIR}/{f}", folder / f)
         meta = json.loads((folder / "model.json").read_text())
-        meta["registry"] = dict(model=name, version=int(version), alias=self.alias, run_id=run_id)
+        meta["registry"] = dict(model=name, version=int(version), alias=alias, run_id=run_id)
         session = _session(folder / "model.onnx", self.threads)
         return LoadedModel(activity, session, session.get_inputs()[0].name, meta, "registry", version, run_id)
 
-    def _from_local(self, activity):
-        path = self.model_dir / f"{activity}_model.onnx"
+    def _from_folder(self, activity, folder, source, current):
+        path = Path(folder) / f"{activity}_model.onnx"
         meta = json.loads(path.with_suffix(".json").read_text())
-        current = self.loaded.get(activity)
         stamp = path.stat().st_mtime
-        if current and current.source == "local" and current.meta.get("_mtime") == stamp:
+        if current and current.source == source and current.meta.get("_mtime") == stamp:
             return None
         meta["_mtime"] = stamp
         session = _session(path, self.threads)
         reg = meta.get("registry", {})
-        return LoadedModel(activity, session, session.get_inputs()[0].name, meta, "local",
+        return LoadedModel(activity, session, session.get_inputs()[0].name, meta, source,
                            str(reg["version"]) if reg else None, reg.get("run_id"))
+
+    def _load(self, activity, name):
+        """-> (a new model or None if unchanged, error message or None). Raises if nothing can be served."""
+        current = self.loaded.get(activity)
+        if self.source != "registry":
+            return self._from_folder(activity, self.model_dir, "local", current), None
+        try:
+            return self._from_registry(activity, name, self.alias, current), None
+        except Exception as e:
+            if self.fallback_dir is None or (current is not None and current.source != "bundled"):
+                raise                                    # keep the registry model we already have
+            error = f"{type(e).__name__}: {e} (serving the bundled release model)"
+            return self._from_folder(activity, self.fallback_dir, "bundled", current), error
+
+    def _refresh_shadow(self, activity, name):
+        """The shadow (challenger) next to the champion; dropped when it is the champion itself or gone."""
+        champion, current = self.loaded.get(activity), self.shadow.get(activity)
+        try:
+            found = self.registry.version_by_alias(name, self.shadow_alias)
+            if found is None or champion is None or champion.version == found[0]:
+                if self.shadow.pop(activity, None) is not None:
+                    log.info("%s: shadow model removed", activity)
+                return
+            new = self._from_registry(activity, name, self.shadow_alias, current)
+        except Exception as e:                           # a shadow problem never affects the champion
+            log.warning("%s: shadow model not loaded: %s: %s", activity, type(e).__name__, e)
+            return
+        if new is not None:
+            self.shadow[activity] = new
+            log.info("%s: shadow-scoring %s v%s next to v%s", activity, name, new.version, champion.version)
 
     def refresh(self):
         """Load every model that is missing or whose champion changed. Returns the activities that changed."""
@@ -149,22 +186,24 @@ class ModelStore:
         with self._lock:
             for activity, name in self.models.items():
                 try:
-                    new = (self._from_registry(activity, name) if self.source == "registry"
-                           else self._from_local(activity))
+                    new, error = self._load(activity, name)
                 except Exception as e:                      # keep serving the model we have
-                    self.errors[activity] = f"{type(e).__name__}: {e}"
-                    log.warning("could not load %s: %s", activity, self.errors[activity])
-                    continue
-                self.errors.pop(activity, None)
-                if new is None:
-                    continue
-                old = self.loaded.get(activity)
-                self.loaded[activity] = new                  # atomic swap
-                if old is not None:
-                    self.reloads += 1
-                changed.append(activity)
-                log.info("%s: serving %s v%s (%s)%s", activity, name, new.version, new.meta["arch"].get("type"),
-                         f", was v{old.version}" if old else "")
+                    new, error = None, f"{type(e).__name__}: {e}"
+                    log.warning("could not load %s: %s", activity, error)
+                if error:
+                    self.errors[activity] = error
+                else:
+                    self.errors.pop(activity, None)
+                if new is not None:
+                    old = self.loaded.get(activity)
+                    self.loaded[activity] = new              # atomic swap
+                    if old is not None:
+                        self.reloads += 1
+                    changed.append(activity)
+                    log.info("%s: serving %s v%s (%s, %s)%s", activity, name, new.version,
+                             new.meta["arch"].get("type"), new.source, f", was v{old.version}" if old else "")
+                if self.shadow_alias and self.source == "registry":
+                    self._refresh_shadow(activity, name)
         return changed
 
     def ready(self):

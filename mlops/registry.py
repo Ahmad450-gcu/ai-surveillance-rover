@@ -4,6 +4,9 @@
     python -m mlops.registry promote                    # challenger -> champion if it is better (params.yaml registry)
     python -m mlops.registry pull                       # download the champion into models/ (what the rover runs)
     python -m mlops.registry pull --alias challenger --dest models/try
+    python -m mlops.registry release                    # champion -> models/release/ (in git, baked into the serving
+                                                        # image: what a freshly deployed server starts with)
+    python -m mlops.registry seed                       # empty registry (new server) -> models/release becomes v1 @champion
 
 Lifecycle of a model version:
     train_fight.py  -> new version, alias "challenger" (MLflow run with params, metrics, plots, data version)
@@ -147,6 +150,42 @@ def pull(name=None, alias="champion", dest="models", stem="fight_model"):
     return int(v.version)
 
 
+def release(dest="models/release"):
+    """The champion -> models/release/fight_model.{onnx,json}: committed with the code that ships it, copied into the
+    serving image (fallback while a new server's registry is empty) and the source of `seed`."""
+    version = pull(dest=dest)
+    (ROOT / dest / "fight_model.pt").unlink(missing_ok=True)       # serving and seeding need the ONNX model only
+    return version
+
+
+def seed(src="models/release", name=None):
+    """A registry without a champion (a freshly deployed server) gets the release model as its champion, so the first
+    retraining there has a model to beat instead of being promoted unchecked. Does nothing if there is a champion."""
+    mlflow, client = connect()
+    name = name or params()["model_name"]
+    current = version_by_alias(client, name, "champion")
+    if current is not None:
+        print(f"{name}: v{current.version} is the champion already; nothing to seed")
+        return None
+    src = ROOT / src
+    meta = json.loads((src / "fight_model.json").read_text())
+    mlflow.set_experiment("fight-model")
+    with tempfile.TemporaryDirectory() as tmp, mlflow.start_run(run_name="seed-release"):
+        for f in ("onnx", "json"):
+            shutil.copy(src / f"fight_model.{f}", Path(tmp) / f"model.{f}")
+        mlflow.set_tags({"source": "release-bundle", "origin": json.dumps(meta.get("registry", {}))})
+        mlflow.log_metrics({f"test_{k}": float(v) for k, v in (meta.get("test_learned") or {}).items()
+                            if isinstance(v, (int, float))})
+        mlflow.log_artifacts(tmp, artifact_path=ARTIFACT_DIR)
+        version = register(mlflow, client, Path(tmp) / "model.onnx", name, tags={
+            "arch": meta["arch"]["type"], "source": "release-bundle",
+            "origin_version": meta.get("registry", {}).get("version", "?")})
+    client.set_registered_model_alias(name, "champion", version)
+    client.delete_registered_model_alias(name, "challenger")
+    print(f"{name}: release model (origin v{meta.get('registry', {}).get('version', '?')}) seeded as v{version} @champion")
+    return version
+
+
 def list_versions(name=None):
     _, client = connect()
     name = name or params()["model_name"]
@@ -173,6 +212,8 @@ def main():
     p = sub.add_parser("pull")
     p.add_argument("--alias", default="champion")
     p.add_argument("--dest", default="models")
+    sub.add_parser("release")
+    sub.add_parser("seed")
     p = sub.add_parser("set-alias", help="e.g. roll back: set-alias champion 1")
     p.add_argument("alias")
     p.add_argument("version")
@@ -183,6 +224,10 @@ def main():
         promote(force=args.force)
     elif args.cmd == "pull":
         pull(alias=args.alias, dest=args.dest)
+    elif args.cmd == "release":
+        release()
+    elif args.cmd == "seed":
+        seed()
     else:
         _, client = connect()
         client.set_registered_model_alias(params()["model_name"], args.alias, args.version)

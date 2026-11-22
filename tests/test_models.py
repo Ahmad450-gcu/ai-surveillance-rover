@@ -118,3 +118,21 @@ def test_fast_person_frames_equal_the_per_frame_rules():
         b = np.concatenate([rng.uniform(0, 300, (20, 2)), rng.uniform(300, 600, (20, 2))], 1).astype(np.float32)
         (c1, s1), (c2, s2) = _person_frames_slow(k, b), _person_frames(k, b)
         assert np.allclose(c1, c2, atol=1e-3) and s1 == pytest.approx(s2, rel=1e-6)
+
+
+def test_seed_gives_an_empty_registry_the_release_model_once(tmp_path, monkeypatch):
+    mlflow = pytest.importorskip("mlflow")
+    from mlops import registry
+    if not (registry.ROOT / "models" / "release" / "fight_model.onnx").exists():
+        pytest.skip("no release model")
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", f"sqlite:///{(tmp_path / 'mlflow.db').as_posix()}")
+    monkeypatch.setattr(registry, "params", lambda: {"model_name": "fight-seed"})
+    _, client = registry.connect()
+    mlflow.create_experiment("fight-model", artifact_location=(tmp_path / "artifacts").as_uri())
+    v = registry.seed()
+    champion = client.get_model_version_by_alias("fight-seed", "champion")
+    assert int(champion.version) == v == 1 and champion.tags["source"] == "release-bundle"
+    files = {f.path for f in client.list_artifacts(champion.run_id, registry.ARTIFACT_DIR)}
+    assert files == {f"{registry.ARTIFACT_DIR}/model.onnx", f"{registry.ARTIFACT_DIR}/model.json"}   # what serving reads
+    assert client.get_run(champion.run_id).data.metrics["test_f1"] > 0                       # the gate has a number
+    assert registry.seed() is None                                                           # never twice

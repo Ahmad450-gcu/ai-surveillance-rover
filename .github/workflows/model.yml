@@ -1,0 +1,76 @@
+name: Model rollout
+
+# Model lifecycle on the deployment, from the Actions tab (Run workflow), with the run log as the audit trail:
+#   list           registry versions, test scores, aliases and promotion decisions
+#   promote        challenger -> champion if it passes the promotion gate (params.yaml registry)
+#   promote-force  challenger -> champion anyway (a person decided, e.g. after its shadow results in Grafana)
+#   rollback       champion -> the given version
+# Each step waits until the serving API serves the new champion (deploy/model.sh). Target: DEPLOY_TARGET (cd.yml).
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        type: choice
+        options: [list, promote, promote-force, rollback]
+        default: list
+      version:
+        description: "rollback only: the registry version that becomes champion"
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cd
+  cancel-in-progress: false
+
+jobs:
+  args:
+    runs-on: ubuntu-latest
+    outputs:
+      args: ${{ steps.a.outputs.args }}
+    steps:
+      - id: a
+        env:
+          ACTION: ${{ inputs.action }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          case "$ACTION" in
+            list|promote) args="$ACTION" ;;
+            promote-force) args="promote --force" ;;
+            rollback)
+              [[ "$VERSION" =~ ^[0-9]+$ ]] || { echo "rollback needs a version number"; exit 1; }
+              args="rollback $VERSION" ;;
+          esac
+          echo "args=$args" >> "$GITHUB_OUTPUT"
+
+  local:
+    needs: args
+    if: vars.DEPLOY_TARGET == 'local'
+    runs-on: [self-hosted, rover]
+    environment: production-local
+    steps:
+      - shell: bash
+        env:
+          DEPLOY_DIR: ${{ vars.DEPLOY_DIR }}
+          ARGS: ${{ needs.args.outputs.args }}
+        run: bash "$DEPLOY_DIR/deploy/model.sh" $ARGS
+
+  ec2:
+    needs: args
+    if: vars.DEPLOY_TARGET == 'ec2'
+    runs-on: ubuntu-latest
+    environment: production-ec2
+    steps:
+      - env:
+          KEY: ${{ secrets.EC2_SSH_KEY }}
+          HOST: ${{ vars.EC2_HOST }}
+          USER_AT: ${{ vars.EC2_USER || 'ubuntu' }}
+          DIR: ${{ vars.DEPLOY_DIR || '/opt/rover' }}
+          ARGS: ${{ needs.args.outputs.args }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/deploy && chmod 600 ~/.ssh/deploy
+          ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          ssh -i ~/.ssh/deploy -o BatchMode=yes "$USER_AT@$HOST" "cd '$DIR' && bash deploy/model.sh $ARGS"
