@@ -22,9 +22,12 @@ registry() {
     bash -c "cd /opt/rover && /opt/trainer/bin/python -m mlops.registry $*"
 }
 
+version_of() {                   # JSON (one line or pretty-printed) -> its first "version" field
+  tr -d ' \r\n' | grep -o '"version":"\{0,1\}[0-9]*' | head -1 | grep -o '[0-9]*$'
+}
+
 champion_version() {
-  curl -fsS -m 5 "$MLFLOW/api/2.0/mlflow/registered-models/alias?name=$NAME&alias=champion" \
-    | sed -E 's/.*"version": ?"?([0-9]+)"?.*/\1/'
+  curl -fsS -m 5 "$MLFLOW/api/2.0/mlflow/registered-models/alias?name=$NAME&alias=champion" | version_of
 }
 
 wait_for_serving() {             # the serving API polls the registry every RELOAD_SECONDS; ask it to look now
@@ -33,7 +36,7 @@ wait_for_serving() {             # the serving API polls the registry every RELO
   token=$(env_get SERVING_ADMIN_TOKEN || true)
   curl -fsS -m 10 -o /dev/null -X POST ${token:+-H "Authorization: Bearer $token"} "$SERVING/admin/reload" || true
   for _ in $(seq 1 40); do
-    served=$(curl -fsS -m 5 "$SERVING/v1/models/fight" | sed -E 's/.*"version": ?"?([0-9]+)"?.*/\1/' || true)
+    served=$(curl -fsS -m 5 "$SERVING/v1/models/fight" | version_of || true)
     if [ "$served" = "$want" ]; then echo "serving: v$served is live"; return 0; fi
     sleep 3
   done
