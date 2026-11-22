@@ -10,9 +10,9 @@ PROFILES=${COMPOSE_PROFILES:-$(env_get COMPOSE_PROFILES)}
 H=http://127.0.0.1
 failed=0
 
-check() {                        # name url [tries]
-  for _ in $(seq 1 "${3:-20}"); do
-    if curl -fs -m 5 -o /dev/null "$2"; then echo "  ok    $1"; return 0; fi
+check() {                        # name url [tries]: a just-started service on a busy machine may need minutes
+  for _ in $(seq 1 "${3:-30}"); do
+    if curl -fs -m 10 -o /dev/null "$2"; then echo "  ok    $1"; return 0; fi
     sleep 3
   done
   echo "  FAIL  $1 ($2)"; failed=1

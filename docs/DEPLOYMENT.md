@@ -123,7 +123,38 @@ about USD 2–3 per day of demo. `terraform destroy` removes everything when it 
 
 ## 6. Results
 
-RESULTS_PLACEHOLDER
+Measured on the laptop (Windows 11, 7.4 GB RAM, Docker VM 3.6 GB), 22 Nov 2026. The deployment clone was a separate
+folder with `COMPOSE_PROFILES=` (core) and `IMAGE_PREFIX=ghcr.io/ahmad450-gcu/rover`.
+
+**Publishing.** Every push ran CI (4 jobs) and then CD: the 5 images were built and pushed in parallel to
+`ghcr.io/ahmad450-gcu/rover-*` with `sha-…` and `latest` tags. The packages are public, so a server pulls them without
+logging in. Docker Hub was skipped because its secrets are not set yet.
+
+| Test | What happened | Time |
+|---|---|---|
+| First deployment (`fa5acec`) | pull (core images ≈ 2 GB) → `up --wait` → smoke tests: backend, MLflow, serving, prediction by registry v4: **deployed** | 7 min 17 s (≈ 6 min pulling) |
+| Forced failure (`3e37bb5` + a check that can't pass) | `FAILED at smoke tests` → **rolled back to `fa5acec`** (images cached: 1 min) | 12 min |
+| Model rollback v4 → v1 → v4 (`deploy/model.sh rollback`) | alias moved, serving reloaded, script confirmed `serving: v1 is live`, then `v4 is live` | 22 s, 19 s |
+| Shadow scoring (400 real windows from the test set, champion v4, shadow v5) | every answer from v4; v5 scored all 400; decisions agreed on **82 %** of windows; windows above threshold 128 (v4) vs 129 (v5) | – |
+
+The 82 % agreement is the reason for the shadow stage: v5 and v4 have almost the same test F1 and raise almost the same
+number of alerts, yet they disagree on one window in five. A promotion that looks neutral by the numbers still changes
+*which* situations raise an alarm, and the shadow metrics show this on real traffic before anyone promotes.
+
+**Problems these tests found, now fixed:**
+
+- The rollback re-ran the failing check that was meant for the new release, so a successful rollback was reported as
+  failed. Extra checks (`SMOKE_EXTRA_URLS`) now apply only to the new release.
+- `deploy.sh` checks out other commits while it runs, and bash reads a script while executing it. A commit that
+  changes `deploy.sh` could have made the running deployment execute the wrong lines. The script now runs inside a
+  function, so bash reads all of it before it starts.
+- `model.sh` read the version from MLflow's multi-line JSON incorrectly. Serving had already switched, but the script
+  waited 2 minutes and then reported a failure.
+- On the overloaded laptop (Docker swap almost full), the backend sometimes answered on the host port only 1–3 minutes
+  after Docker reported it healthy. The smoke tests now wait up to about 6 minutes per service. A plain restart
+  answers within 6 s, so this is memory pressure, not the deployment.
+
+FINAL_DEPLOY_PLACEHOLDER
 
 ## 7. Tests
 
