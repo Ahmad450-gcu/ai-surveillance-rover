@@ -50,6 +50,8 @@ alerts = Table(
     Column("score", Float),                              # model probability, when the activity is a model
     Column("model_version", String(64)),                 # which model version raised it (lineage)
     Column("rover_id", String(64)),
+    Column("evidence", Text),                            # stream alerts: stream://<camera>/<session>/<frame> (the
+                                                         # skeleton frames in the lake; a label turns them into data)
     Column("label", String(16)),                         # human feedback: real | false_alarm (feeds retraining)
     Column("received", DateTime(timezone=True), nullable=False, server_default=func.now()),
     Index("alerts_time", "time"),
@@ -84,4 +86,14 @@ def make_engine(url=None):
         kwargs["connect_args"] = {"check_same_thread": False}
     engine = create_engine(url, **kwargs)
     metadata.create_all(engine)
+    migrate(engine)
     return engine
+
+
+def migrate(engine):
+    """Columns added after a table was first created (create_all only creates missing tables)."""
+    from sqlalchemy import inspect, text
+    have = {c["name"] for c in inspect(engine).get_columns("alerts")}
+    with engine.begin() as conn:
+        if "evidence" not in have:
+            conn.execute(text("ALTER TABLE alerts ADD COLUMN evidence TEXT"))

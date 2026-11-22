@@ -1,0 +1,22 @@
+{
+ "alerts": [
+  {
+   "alert_id": 93,
+   "time": "2026-11-22T19:29:58",
+   "label": "false_alarm",
+   "evidence": "stream://rover-1/4111d5339b83/537",
+   "camera": "rover-1",
+   "score": 0.9575,
+   "model_version": "fight-detector v4"
+  },
+  {
+   "alert_id": 94,
+   "time": "2026-11-22T19:30:02",
+   "label": "real",
+   "evidence": "stream://rover-1/d6b922f412b6/87",
+   "camera": "rover-1",
+   "score": 0.6708,
+   "model_version": "fight-detector v4"
+  }
+ ]
+}

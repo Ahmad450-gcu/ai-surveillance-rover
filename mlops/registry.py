@@ -7,7 +7,8 @@
 
 Lifecycle of a model version:
     train_fight.py  -> new version, alias "challenger" (MLflow run with params, metrics, plots, data version)
-    promote         -> compares challenger vs champion on the same test clips; on success the alias "champion"
+    promote         -> compares challenger vs champion on the same test clips (the challenger's training run re-scores
+                       the champion on its test set, which matters once new data was added); on success the alias "champion"
                        moves (the previous champion keeps its version, so a rollback is one command:
                        python -m mlops.registry set-alias champion <version>)
     pull            -> models/fight_model.{onnx,pt,json}, used by run.py (and later the serving API)
@@ -94,6 +95,13 @@ def promote(name=None, force=False, report=ROOT / "reports" / "promotion.json"):
         promote_ok, reason = False, "the challenger already is the champion"
     else:
         old = run_metrics(client, champion)
+        compared = client.get_run(challenger.run_id).data.tags.get("champion_version_compared")
+        if compared == str(champion.version) and f"champion_test_{metric}" in new:
+            # the challenger's run re-scored this champion on the challenger's test clips: same data, fair comparison
+            old = {f"test_{metric}": new[f"champion_test_{metric}"], "test_roc_auc": new.get("champion_test_roc_auc")}
+            decision["compared_on"] = "challenger's test set (champion re-scored)"
+        else:
+            decision["compared_on"] = "each version's own test set"
         decision.update(champion=int(champion.version), champion_metric=old.get(f"test_{metric}"),
                         champion_auc=old.get("test_roc_auc"))
         gain = new.get(f"test_{metric}", 0) - old.get(f"test_{metric}", 0)

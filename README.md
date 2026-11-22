@@ -8,7 +8,7 @@ This is an AI-powered surveillance rover (final-year project). The rover (Arduin
 
 **MLOps pipeline (streaming, data lake, model registry, monitoring, drift detection, automated retraining, CI/CD): [`docs/MLOPS_ARCHITECTURE.md`](docs/MLOPS_ARCHITECTURE.md).**
 
-**Building the full rover: follow [`docs/SETUP_GUIDE.md`](docs/SETUP_GUIDE.md)**, one guide from wiring and environments to testing the physical rover step by step. Training the AI: [`docs/TRAINING.md`](docs/TRAINING.md). Model serving API: [`docs/SERVING.md`](docs/SERVING.md). Streaming pipeline (Kafka + Spark): [`docs/STREAMING.md`](docs/STREAMING.md). Monitoring and drift: [`docs/MONITORING.md`](docs/MONITORING.md). Testing from 0 to 100: [`docs/TESTING.md`](docs/TESTING.md). Project plan: [`docs/ROADMAP.md`](docs/ROADMAP.md).
+**Building the full rover: follow [`docs/SETUP_GUIDE.md`](docs/SETUP_GUIDE.md)**, one guide from wiring and environments to testing the physical rover step by step. Training the AI: [`docs/TRAINING.md`](docs/TRAINING.md). Model serving API: [`docs/SERVING.md`](docs/SERVING.md). Streaming pipeline (Kafka + Spark): [`docs/STREAMING.md`](docs/STREAMING.md). Monitoring and drift: [`docs/MONITORING.md`](docs/MONITORING.md). Automated retraining: [`docs/RETRAINING.md`](docs/RETRAINING.md). Testing from 0 to 100: [`docs/TESTING.md`](docs/TESTING.md). Project plan: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## What it detects
 
@@ -68,6 +68,8 @@ docker compose exec backend python -m backend.manage create-user admin
 With `docker compose --profile streaming up -d --build` it also starts **Kafka, Spark Structured Streaming** (UI http://localhost:4040) and the alert bridge; `python run.py --set streaming.enabled=true` then sends every frame's skeletons through Kafka and Spark ([`docs/STREAMING.md`](docs/STREAMING.md)).
 
 Add `--profile monitoring` for **Prometheus** (http://localhost:9090), **Grafana** (http://localhost:3000, user `admin`, password `GRAFANA_ADMIN_PASSWORD` from `.env`), **Alertmanager** (http://localhost:9093) and the **drift monitor** (http://127.0.0.1:9200/report) ([`docs/MONITORING.md`](docs/MONITORING.md)).
+
+`--profile mlops` starts **Airflow** (http://localhost:8081, user `admin`, password `AIRFLOW_ADMIN_PASSWORD` from `.env`) with the retraining pipeline `fight_retraining`: drift alerts and labelled alerts ("real" / "false alarm" in the dashboard) retrain the model, and a better one replaces the champion in the serving API automatically ([`docs/RETRAINING.md`](docs/RETRAINING.md)). Training needs about 2.5 GB of Docker memory; on an 8 GB laptop stop the `streaming` and `monitoring` profiles while it runs.
 
 Stop with `docker compose down` (data is kept in Docker volumes; `docker compose down -v` deletes it). With the stack running, set `ROVER__BACKEND__URL=http://localhost:8080` in `.env` so `run.py` sends its alerts there, and training runs log to MLflow automatically (`MLFLOW_TRACKING_URI`). The Pi agent must be started with the same token as `ROVER__ROVER__TOKEN` in `.env`.
 

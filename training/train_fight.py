@@ -109,11 +109,40 @@ def export_onnx(model, path, T):
     return diff
 
 
+def evaluate_champion(data, test_ids, labels):
+    """Score the registry's current @champion on THIS run's test clips, with its own alert rule. When the data
+    changed (e.g. feedback clips were added), the champion's logged test score was measured on other clips, so the
+    promotion gate compares challenger and champion on these numbers instead. None if there is no registry/champion."""
+    import shutil
+    try:
+        from mlops import registry
+        tmp = ROOT / "data" / "tmp" / "champion"
+        shutil.rmtree(tmp, ignore_errors=True)
+        version = registry.pull(alias="champion", dest=str(tmp.relative_to(ROOT)))
+    except (SystemExit, Exception) as e:                                   # no MLflow, or no champion yet
+        print(f"champion not evaluated on this test set ({type(e).__name__}: {e})")
+        return None
+    from rover_ai.learned import load_model
+    model, meta = load_model(tmp / "fight_model.onnx")
+    probs = pair_probs(model, data["eval"], test_ids)
+    scores = np.array([clip_score(probs.get(int(i)), meta["consecutive"]) for i in test_ids])
+    result = metrics(labels[test_ids], scores >= meta["threshold"], scores)
+    print(f"champion v{version} ({meta['arch']['type']}) on this test set: {result}")
+    return dict(version=version, arch=meta["arch"]["type"], **result)
+
+
 def git_commit():
     try:
         return subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
     except OSError:
         return ""
+
+
+def trained_on(train_clips):
+    """e.g. 'RWF-2000 train split (1600 clips) + rover feedback (12 clips)'."""
+    rover = sum("/rover/" in c["path"] for c in train_clips)
+    text = f"RWF-2000 train split ({len(train_clips) - rover} clips, pose from YOLO11n-pose + ByteTrack)"
+    return text + (f" + rover feedback ({rover} labelled stream clips)" if rover else "")
 
 
 def data_version():
@@ -127,6 +156,8 @@ def data_version():
         stages = yaml.safe_load(lock.read_text()).get("stages", {})
         for o in stages.get("features", {}).get("outs", []):
             out["features_md5"] = o.get("md5")
+        for o in stages.get("feedback", {}).get("outs", []):
+            out["feedback_md5"] = o.get("md5")
     return out
 
 
@@ -182,6 +213,7 @@ def main():
     print("coverage:", coverage)
     print("TEST (clips with a close pair) learned:", learned_pair)
     print("TEST (clips with a close pair) rules  :", rules_pair)
+    champion = evaluate_champion(data, test_ids, labels) if not args.no_register else None
 
     # 4. candidate model files
     CANDIDATE.mkdir(parents=True, exist_ok=True)
@@ -191,12 +223,13 @@ def main():
     meta = dict(arch=arch, n_params=count_params(model), window=fcfg["window"], fps=FPS, threshold=thr,
                 consecutive=need, pair_gap=PAIR_GAP, proximity=fcfg["proximity"],
                 min_cover=fcfg.get("min_cover", 0.5),
-                trained_on="RWF-2000 train split (pose from YOLO11n-pose + ByteTrack)", data_version=data_version(),
+                trained_on=trained_on(clips[:n_train]), data_version=data_version(),
                 clips=dict(train=n_train, fit=n_train - n_dev, dev=n_dev, test=len(test_ids), folds=P["folds"]),
                 windows=int(len(windows_of(data["train"], train_ids[n_dev:])[1])), augment=P.get("augment"),
                 cv_with_pair=cv, cv_fold_dev_auc=[round(a, 4) for a in fold_aucs], test_learned=learned,
                 test_rules=rules, coverage=coverage, test_learned_with_pair=learned_pair,
-                test_rules_with_pair=rules_pair, onnx_max_diff=onnx_diff, git_commit=git_commit(),
+                test_rules_with_pair=rules_pair, champion_on_this_test=champion, onnx_max_diff=onnx_diff,
+                git_commit=git_commit(),
                 train_minutes=round(minutes, 1), created=time.strftime("%Y-%m-%d %H:%M"))
     (CANDIDATE / "model.json").write_text(json.dumps(meta, indent=2))
 
@@ -205,6 +238,7 @@ def main():
     (rep / "fight_metrics.json").write_text(json.dumps(
         dict(arch=arch["type"], threshold=thr, consecutive=need, cv_with_pair=cv, test_learned=learned,
              test_rules=rules, coverage=coverage, test_learned_with_pair=learned_pair, test_rules_with_pair=rules_pair,
+             champion_on_this_test=champion,
              dev_window_auc=dev_auc, test_fight_clips_without_close_pair=int((fight & ~has_pair).sum()),
              history=history), indent=2))
     plots(rep, history, test_y[has_pair], test_scores[has_pair], thr, learned_pair, rules_pair, arch["type"].upper())
@@ -234,6 +268,10 @@ def log_mlflow(P, meta, history, register=True, run_name=None):
         m.update(threshold=meta["threshold"], consecutive=meta["consecutive"], n_params=meta["n_params"],
                  cv_dev_auc_mean=float(np.mean(meta["cv_fold_dev_auc"])), train_minutes=meta["train_minutes"],
                  onnx_max_diff=meta["onnx_max_diff"])
+        champ = meta.get("champion_on_this_test")
+        if champ:                       # the champion re-scored on the same test clips (used by the promotion gate)
+            m.update({f"champion_test_{k}": v for k, v in champ.items() if k not in ("version", "arch")})
+            mlflow.set_tag("champion_version_compared", champ["version"])
         mlflow.log_metrics({k: float(v) for k, v in m.items() if isinstance(v, (int, float)) and v == v})
         mlflow.log_artifacts(str(CANDIDATE), artifact_path=registry.ARTIFACT_DIR)
         for f in ("fight_metrics.json", "fight_training.png", "fight_roc.png", "fight_confusion.png"):

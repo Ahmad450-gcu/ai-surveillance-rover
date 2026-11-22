@@ -44,7 +44,7 @@ jobs:
       - name: Validate docker-compose.yml
         run: |
           cp .env.example .env
-          docker compose --profile streaming --profile monitoring config --quiet
+          docker compose --profile streaming --profile monitoring --profile mlops config --quiet
       - name: Validate Prometheus rules and Alertmanager config
         run: |
           docker run --rm -v "$PWD/docker/prometheus:/etc/prometheus:ro" --entrypoint promtool             prom/prometheus:v2.55.1 check config /etc/prometheus/prometheus.yml
@@ -54,4 +54,7 @@ jobs:
           python3 docker/grafana/build_dashboards.py
           git diff --exit-code docker/grafana/dashboards
       - name: Build images
-        run: docker compose --profile streaming build backend mlflow serving spark
+        run: docker compose --profile streaming --profile mlops build backend mlflow serving spark airflow-scheduler
+      - name: Retraining DAG imports and has the intended shape (inside the Airflow image)
+        run: |
+          docker run --rm -v "$PWD:/opt/rover:ro" -w /tmp -e AIRFLOW__CORE__LOAD_EXAMPLES=false rover/airflow:latest             bash -c "airflow db migrate > /dev/null && python -m pytest /opt/rover/tests/test_dag.py -q -p no:cacheprovider"

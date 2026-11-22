@@ -14,7 +14,8 @@ HTTP (port 9200):
   GET  /metrics        Prometheus metrics (rover_drift_*, rover_prediction_*, rover_false_alarm_rate, ...)
   GET  /report         the latest drift report (JSON; also saved to s3://processed/monitoring/drift/)
   POST /alertmanager   Alertmanager webhook: every alert is stored in table ops_events; a firing alert labelled
-                       action="retrain" creates a row in table retrain_requests (Phase 7: Airflow retrains)
+                       action="retrain" creates a row in table retrain_requests and starts the Airflow DAG
+                       fight_retraining (AIRFLOW_URL); if Airflow is down, its daily run picks the request up
   GET  /health
 """
 import json
@@ -87,13 +88,14 @@ class Metrics:
 
 
 class Monitor:
-    def __init__(self, lake=None, db=None, window_minutes=60, min_samples=200, min_frames=1000):
+    def __init__(self, lake=None, db=None, window_minutes=60, min_samples=200, min_frames=1000, trigger=None):
         self.lake = lake                # mlops.lake module (S3 client), injectable for tests
         self.db = db                    # callable -> psycopg connection, injectable for tests
         self.window = timedelta(minutes=window_minutes)
         self.min_samples = min_samples          # values per feature, and ...
         self.min_frames = min_frames            # ... frames per camera (~2 min of video): a few seconds of one
                                                 # unusual scene is not a camera that drifted
+        self.trigger = trigger                  # callable(request_id): starts the retraining DAG (None = don't)
         self.metrics = Metrics()
         self.reference = None
         self.report = {}
@@ -235,7 +237,29 @@ class Monitor:
                         self.metrics.retrain.labels(name).inc()
                         created.append(rid)
                         log.warning("retraining requested (%s): request %d", name, rid)
+        for rid in created:                       # after the commit, so the DAG sees the request
+            if self.trigger:
+                try:
+                    self.trigger(rid)
+                except Exception as e:            # Airflow down: its daily run picks the pending request up
+                    log.warning("could not start the retraining DAG (%s); it will run at the next schedule", e)
         return {"stored": len(payload.get("alerts", [])), "retrain_requests": created}
+
+
+def airflow_trigger(url, user, password, dag="fight_retraining"):
+    """-> callable(request_id) that starts a DAG run through Airflow's REST API."""
+    import base64
+    import urllib.request
+
+    def trigger(request_id):
+        body = json.dumps({"conf": {"retrain_request": request_id}}).encode()
+        req = urllib.request.Request(f"{url.rstrip('/')}/api/v1/dags/{dag}/dagRuns", data=body, method="POST",
+                                     headers={"Content-Type": "application/json", "Authorization": "Basic " +
+                                              base64.b64encode(f"{user}:{password}".encode()).decode()})
+        with urllib.request.urlopen(req, timeout=10) as r:            # noqa: S310 - URL from our own settings
+            run = json.loads(r.read())
+        log.warning("retraining DAG started: %s (request %d)", run.get("dag_run_id"), request_id)
+    return trigger
 
 
 def _fmt(v):
@@ -287,7 +311,10 @@ def main():
     monitor = Monitor(lake=lake, db=lambda: psycopg.connect(url, autocommit=True),
                       window_minutes=float(os.environ.get("DRIFT_WINDOW_MINUTES", "60")),
                       min_samples=int(os.environ.get("DRIFT_MIN_SAMPLES", "200")),
-                      min_frames=int(os.environ.get("DRIFT_MIN_FRAMES", "1000")))
+                      min_frames=int(os.environ.get("DRIFT_MIN_FRAMES", "1000")),
+                      trigger=airflow_trigger(os.environ["AIRFLOW_URL"], os.environ.get("AIRFLOW_USER", "admin"),
+                                              os.environ.get("AIRFLOW_PASSWORD", ""))
+                      if os.environ.get("AIRFLOW_URL") else None)
     with monitor.db() as conn:
         conn.execute(DDL)
     serve(monitor, int(os.environ.get("PORT", "9200")))

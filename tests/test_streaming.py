@@ -85,10 +85,11 @@ def test_alert_cooldowns_follow_stream_time(records, tmp_path):
 def test_bridge_maps_alerts_for_the_backend_and_drops_repeats():
     alert = {"id": "cam-s-12-3-9", "time": "2026-11-22T10:00:00", "type": "fight", "message": "FIGHT: ID 3 and ID 9",
              "track_ids": [3, 9], "score": 0.8, "model_version": "fight-detector v4", "rover_id": "cam",
-             "source": "stream", "session": "s"}
+             "source": "stream", "session": "s", "frame": 12, "t": 1.2}
     body = to_backend(alert)
     assert set(body) <= {"time", "type", "message", "track_ids", "snapshot", "clip", "score", "model_version",
-                         "rover_id"}
+                         "rover_id", "evidence"}
     assert body["message"].endswith("[stream]") and body["score"] == 0.8
+    assert body["evidence"] == "stream://cam/s/12"
     seen = Seen(size=2)
     assert seen.add("a") and not seen.add("a") and seen.add("b") and seen.add("c") and seen.add("a")   # bounded

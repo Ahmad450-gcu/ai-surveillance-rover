@@ -7,11 +7,11 @@ Computing features is the slow part of training (about 9 minutes on a laptop), s
 every experiment (cross-validation, tuning, every architecture) reuses it. It reruns only when the data or
 the feature settings change (DVC).
 
-Output  data/processed/fight/<dataset>/
-    train.npz   training windows of the train split, with the 4 precomputed variants
-                (as is, mirrored, persons swapped, both): X (N, 4, T, F) float16, y (N,), clip (N,)
-    eval.npz    every window (stride 1, both person orders) of every close pair in every clip, used to score whole
-                clips exactly like live detection: X (M, 2, T, F) float16, clip (M,), pair (M,), start (M,)
+Output  data/processed/fight/<dataset>/   (.npy files: read memory-mapped, so training needs little RAM)
+    train_X.npy (N, 4, T, F) float16  training windows of the train split, with the 4 precomputed variants
+                                      (as is, mirrored, persons swapped, both); train_y.npy, train_clip.npy (N,)
+    eval_X.npy  (M, 2, T, F) float16  every window (stride 1, both person orders) of every close pair in every clip,
+                                      to score whole clips exactly like live detection; eval_clip/pair/start.npy (M,)
     index.json  the clips (train first, then test), labels and the settings used
 """
 import argparse
@@ -29,7 +29,7 @@ sys.path.insert(0, str(ROOT))
 from rover_ai.geometry import body_center, body_scale, box_iou  # noqa: E402
 from rover_ai.learned import MIN_COVER, N_FEAT, flip_boxes, flip_kpts, window_features  # noqa: E402
 
-FEATURE_VERSION = 1             # bump when window_features changes, so old caches are not mixed with new code
+FEATURE_VERSION = 2             # bump when window_features or the file layout changes (2: memory-mapped .npy)
 
 
 def settings():
@@ -157,10 +157,18 @@ def main():
             if (i + 1) % 200 == 0:
                 print(f"{i + 1}/{len(clips)} clips  {time.time() - t0:.0f}s", flush=True)
     ev_meta = np.concatenate(ev_meta)
-    np.savez(out / "train.npz", X=np.concatenate(tr_x), y=np.concatenate(tr_y), clip=np.concatenate(tr_clip))
-    np.savez(out / "eval.npz", X=np.concatenate(ev_x), clip=ev_meta[:, 0], pair=ev_meta[:, 1],
-             start=ev_meta[:, 2].astype(np.int16))
-    n_tr, n_ev = sum(map(len, tr_x)), len(ev_meta)
+    for old in ("train.npz", "eval.npz"):                     # version 1 files
+        (out / old).unlink(missing_ok=True)
+    save_stacked(out / "train_X.npy", tr_x)
+    del tr_x
+    save_stacked(out / "eval_X.npy", ev_x)
+    del ev_x
+    np.save(out / "train_y.npy", np.concatenate(tr_y))
+    np.save(out / "train_clip.npy", np.concatenate(tr_clip))
+    np.save(out / "eval_clip.npy", ev_meta[:, 0])
+    np.save(out / "eval_pair.npy", ev_meta[:, 1])
+    np.save(out / "eval_start.npy", ev_meta[:, 2].astype(np.int16))
+    n_tr, n_ev = len(np.load(out / "train_y.npy")), len(ev_meta)
     index = dict(feature_version=FEATURE_VERSION, n_feat=N_FEAT, settings=cfg, n_train=len(train), n_test=len(test),
                  clips=[dict(path=p, label=lab, split="train" if i < len(train) else "test")
                         for i, (p, lab) in enumerate(clips)],
@@ -176,16 +184,31 @@ def main():
         print(f"lake: s3://processed/{prefix}/  {up} uploaded, {same} unchanged")
 
 
+def save_stacked(path, parts):
+    """Concatenate arrays straight into a .npy file (no second copy in memory)."""
+    parts = [p for p in parts if len(p)]
+    X = np.lib.format.open_memmap(path, mode="w+", dtype=parts[0].dtype,
+                                  shape=(sum(len(p) for p in parts), *parts[0].shape[1:]))
+    i = 0
+    for p in parts:
+        X[i:i + len(p)] = p
+        i += len(p)
+    X.flush()
+    del X
+
+
 def load_features(cfg=None):
-    """-> dict(index, train=(X, y, clip), eval=(X, clip, pair, start)) from the processed zone."""
+    """-> dict(index, train=(X, y, clip), eval=(X, clip, pair, start)) from the processed zone.
+    The big X arrays are memory-mapped: pages are read from disk when used, not all loaded into RAM."""
     cfg = cfg or settings()
     out = ROOT / cfg["output"]
     index = json.loads((out / "index.json").read_text())
     if index.get("feature_version") != FEATURE_VERSION:
         sys.exit(f"{out} was built by another feature version: run  dvc repro features")
-    tr, ev = np.load(out / "train.npz"), np.load(out / "eval.npz")
-    return dict(index=index, train=(tr["X"], tr["y"], tr["clip"]),
-                eval=(ev["X"], ev["clip"], ev["pair"], ev["start"].astype(np.int32)))
+    def arr(name, mmap=False):
+        return np.load(out / f"{name}.npy", mmap_mode="r" if mmap else None)
+    return dict(index=index, train=(arr("train_X", True), arr("train_y"), arr("train_clip")),
+                eval=(arr("eval_X", True), arr("eval_clip"), arr("eval_pair"), arr("eval_start").astype(np.int32)))
 
 
 if __name__ == "__main__":

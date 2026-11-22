@@ -1,0 +1,15 @@
+{
+ "run_id": "scheduled__2026-11-21T03:00:00+00:00",
+ "reasons": [
+  "alert: DataDriftDetected"
+ ],
+ "promoted": false,
+ "challenger": 5,
+ "champion_before": 4,
+ "metric": "f1",
+ "challenger_metric": 0.6706,
+ "champion_metric": 0.6744,
+ "compared_on": "challenger's test set (champion re-scored)",
+ "reason": "f1 -0.0038 (needs +0.01)",
+ "finished": "2026-11-22T20:04:07.640078+00:00"
+}

@@ -23,7 +23,7 @@ data_validation:             # stage "validate": quality gate between the raw an
 
 features:                    # stage "features": validated clips -> model-ready windows (processed zone)
   data: data/validated/pose/rwf2000   # output of the validate stage (quality-checked clips)
-  extra_data: []             # more pose folders, e.g. [data/validated/pose/rover] for your labelled rover clips
+  extra_data: [data/validated/pose/rover]   # labelled feedback clips from the stream (stage feedback); add more pose folders here
   output: data/processed/fight/rwf2000
   window: 20                 # frames per sample at 10 fps = 2 seconds
   stride: 2                  # training windows start every 0.2 s
@@ -58,7 +58,6 @@ registry:
   max_auc_drop: 0.02         # ...without losing more than this much ROC AUC
 
 # Data-drift monitoring (monitoring/): reference = what the training data looks like (stage drift_reference)
-monitoring:
-  data: data/validated/pose/rwf2000   # its train split is the reference
+monitoring:                           # reference = train split of features.data + features.extra_data
   max_clips: 800                      # sample of training clips (enough for stable deciles, ~1 min)
   bins: 10                            # PSI bins = deciles of the reference

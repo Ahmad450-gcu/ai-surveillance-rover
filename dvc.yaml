@@ -39,10 +39,19 @@ stages:
       - reports/data_validation.json:
           cache: false
 
+  feedback:                  # labelled stream alerts (manifest exported from the backend) -> labelled pose clips
+    cmd: python -m training.feedback build
+    deps:
+      - data/manifests/feedback_labels.json
+      - training/feedback.py
+    outs:
+      - data/validated/pose/rover
+
   features:                  # validated clips -> model-ready windows, computed once for every experiment
     cmd: python training/features.py --upload
     deps:
       - data/validated/pose/rwf2000
+      - data/validated/pose/rover
       - training/features.py
       - rover_ai/learned.py
     params:
@@ -77,10 +86,13 @@ stages:
     cmd: python -m monitoring.reference --upload
     deps:
       - data/validated/pose/rwf2000
+      - data/validated/pose/rover
       - monitoring/drift.py
       - monitoring/reference.py
     params:
       - monitoring
+      - features.data
+      - features.extra_data
     outs:
       - reports/drift_reference.json:
           cache: false       # small, kept in git; the monitor reads the lake copy

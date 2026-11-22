@@ -7,13 +7,53 @@
 # Later phases add services behind profiles so a small machine runs only what it needs:
 #   --profile streaming   Kafka, Spark, alert bridge
 #   --profile monitoring  Prometheus, Alertmanager, Grafana, Kafka exporter, drift monitor
-#   --profile mlops       Airflow
+#   --profile mlops       Airflow (retraining pipeline; UI on port 8081)
 #
 # Every setting comes from .env, so the same file runs on a laptop or a cloud VM (e.g. AWS EC2).
 name: rover
 
 x-restart: &restart
   restart: unless-stopped
+
+# shared by the Airflow services (mlops profile)
+x-airflow-env: &airflow-env
+  AIRFLOW__CORE__EXECUTOR: LocalExecutor
+  AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/airflow
+  AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:?set AIRFLOW_FERNET_KEY in .env}
+  AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW_SECRET_KEY:?set AIRFLOW_SECRET_KEY in .env}
+  AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+  AIRFLOW__CORE__DAGS_FOLDER: /opt/rover/airflow/dags
+  AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+  AIRFLOW__CORE__PARALLELISM: "2"               # one training at a time on a small machine
+  AIRFLOW__WEBSERVER__WORKERS: "1"
+  AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session
+  AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: "60"
+  # what the DAG's steps need (same services as everything else, by their Docker names)
+  PROJECT_DIR: /opt/rover
+  ROVER_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-rover}
+  MLFLOW_TRACKING_URI: http://mlflow:5000
+  LAKE_ENDPOINT_URL: http://minio:9000
+  AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+  AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+  MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+  MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+  SERVING_URL: http://serving:8000/v1/models/fight
+  RETRAIN_MIN_NEW_LABELS: ${RETRAIN_MIN_NEW_LABELS:-5}
+  RETRAIN_MAX_AGE_DAYS: ${RETRAIN_MAX_AGE_DAYS:-7}
+
+x-airflow: &airflow
+  build:
+    context: .
+    dockerfile: docker/airflow/Dockerfile
+  image: ${IMAGE_PREFIX:-rover}/airflow:${IMAGE_TAG:-latest}
+  profiles: ["mlops"]
+  environment: *airflow-env
+  volumes:
+    - .:/opt/rover                            # the project: DAGs, code, params, DVC data (cloud VM: the clone)
+    - airflowlogs:/opt/airflow/logs
+  depends_on:
+    postgres:
+      condition: service_healthy
 
 services:
   # ---------------- operational database (alerts, telemetry, users) + MLflow/Airflow metadata ----------------
@@ -349,6 +389,9 @@ services:
       DRIFT_WINDOW_MINUTES: ${DRIFT_WINDOW_MINUTES:-30}
       DRIFT_MIN_SAMPLES: ${DRIFT_MIN_SAMPLES:-200}
       DRIFT_MIN_FRAMES: ${DRIFT_MIN_FRAMES:-1000}
+      AIRFLOW_URL: http://airflow-webserver:8080          # drift alert -> start the retraining DAG
+      AIRFLOW_USER: ${AIRFLOW_ADMIN_USER:-admin}
+      AIRFLOW_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:-}
     ports:
       - "${DRIFT_MONITOR_PORT:-9200}:9200"     # /report, /metrics
     healthcheck:
@@ -358,6 +401,49 @@ services:
       retries: 10
     mem_limit: 384m
 
+  # ================= mlops profile:  docker compose --profile mlops up -d =================
+  # ---------------- Airflow: the retraining pipeline (airflow/dags/fight_retraining.py) ----------------
+  airflow-init:                               # one-shot: database migration + admin user
+    <<: *airflow
+    command: ["bash", "/opt/rover/docker/airflow/init.sh"]
+    environment:
+      <<: *airflow-env
+      AIRFLOW_ADMIN_USER: ${AIRFLOW_ADMIN_USER:-admin}
+      AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:?set AIRFLOW_ADMIN_PASSWORD in .env}
+    restart: "no"
+
+  airflow-scheduler:                          # also runs the tasks (LocalExecutor): training happens here
+    <<: *airflow
+    command: scheduler
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "airflow", "jobs", "check", "--job-type", "SchedulerJob", "--local"]
+      interval: 30s
+      timeout: 20s
+      retries: 5
+      start_period: 60s
+    mem_limit: 2560m
+
+  airflow-webserver:
+    <<: *airflow
+    command: webserver
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    ports:
+      - "${AIRFLOW_PORT:-8081}:8080"           # 8080 on the host is the backend
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    mem_limit: 768m
+
 volumes:
   pgdata:
   miniodata:
@@ -366,3 +452,4 @@ volumes:
   sparkcheckpoints:
   prometheusdata:
   grafanadata:
+  airflowlogs:

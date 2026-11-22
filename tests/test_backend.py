@@ -92,3 +92,30 @@ def test_metrics_count_alerts_by_source_and_labels(client):
     assert value(after, label) - value(before, label) == 1
     assert value(after, "rover_detector_fps") == 9.5
     assert 'rover_backend_requests_total{method="POST",route="/api/device/alerts",status="200"}' in after
+
+
+def test_existing_database_gets_the_evidence_column(tmp_path):
+    """A database created before alerts.evidence existed is migrated when the backend starts."""
+    from sqlalchemy import create_engine, inspect, text
+
+    from backend.db import make_engine
+    url = f"sqlite:///{tmp_path / 'old.db'}"
+    old = create_engine(url)
+    with old.begin() as conn:
+        conn.execute(text("CREATE TABLE alerts (id INTEGER PRIMARY KEY, time VARCHAR(32) NOT NULL, type VARCHAR(32) "
+                          "NOT NULL, message TEXT NOT NULL, track_ids JSON, snapshot TEXT, clip TEXT, score FLOAT, "
+                          "model_version VARCHAR(64), rover_id VARCHAR(64), label VARCHAR(16), received DATETIME)"))
+    old.dispose()
+    engine = make_engine(url)
+    assert "evidence" in {c["name"] for c in inspect(engine).get_columns("alerts")}
+    make_engine(url).dispose()                                 # running it again changes nothing
+    engine.dispose()
+
+
+def test_stream_alert_evidence_is_stored(client):
+    alert = {"time": "2026-11-22T10:00:00", "type": "fight", "message": "FIGHT [stream]",
+             "evidence": "stream://rover-1/abc123/87"}
+    client.post("/api/device/alerts", json=alert, headers=DEVICE)
+    rows = client.get("/api/alerts", headers=login(client)).json()
+    rows = rows if isinstance(rows, list) else rows.get("alerts", rows)
+    assert any(r.get("evidence") == "stream://rover-1/abc123/87" for r in rows)

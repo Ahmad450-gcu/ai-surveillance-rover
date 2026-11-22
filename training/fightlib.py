@@ -119,7 +119,8 @@ def pair_probs(model, ev, clips, batch=2048):
         for i in range(0, len(sel), batch):
             x = torch.from_numpy(X[sel[i:i + batch]].astype(np.float32))      # (b, 2, T, F): both person orders
             b = x.shape[0]
-            p = torch.sigmoid(model(x.reshape(2 * b, *x.shape[2:]))).numpy().reshape(b, 2)
+            out = model(x.reshape(2 * b, *x.shape[2:]))                       # torch model or ONNX (numpy)
+            p = torch.sigmoid(torch.as_tensor(np.asarray(out))).numpy().reshape(b, 2)
             probs[i:i + b] = p.mean(1)
     out = {}
     for c, pr, s, p in zip(clip[sel], pair[sel], start[sel], probs):

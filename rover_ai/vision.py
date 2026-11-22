@@ -3,7 +3,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-from ultralytics import YOLO
 
 
 @dataclass
@@ -24,6 +23,7 @@ class Item:
 
 class Detector:
     def __init__(self, cfg, root: Path):
+        from ultralytics import YOLO  # here, not at import: Person is used without YOLO (training, stream)
         m = cfg["models"]
         self.pose = YOLO(str(root / m["pose"]))
         self.imgsz = m["imgsz"]

@@ -17,7 +17,7 @@ import urllib.request
 from collections import OrderedDict
 
 log = logging.getLogger("bridge")
-FIELDS = ("time", "type", "message", "track_ids", "snapshot", "clip", "score", "model_version", "rover_id")
+FIELDS = ("time", "type", "message", "track_ids", "snapshot", "clip", "score", "model_version", "rover_id", "evidence")
 
 
 class Seen:
@@ -40,6 +40,8 @@ class Seen:
 def to_backend(alert):
     """Stream alert -> the backend's AlertIn body (unknown fields dropped)."""
     body = {k: alert[k] for k in FIELDS if alert.get(k) is not None}
+    if alert.get("session") is not None and alert.get("frame") is not None:   # where the skeleton frames are
+        body["evidence"] = f"stream://{alert.get('rover_id')}/{alert['session']}/{alert['frame']}"
     body["message"] = f"{body.get('message', '')} [stream]"
     return body
 

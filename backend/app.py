@@ -159,6 +159,7 @@ class AlertIn(BaseModel):
     score: float | None = None
     model_version: str | None = None
     rover_id: str | None = None
+    evidence: str | None = None
 
 
 class Label(BaseModel):

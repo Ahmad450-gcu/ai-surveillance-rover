@@ -1,13 +1,14 @@
 {
   "model": "fight-detector",
-  "challenger": 4,
+  "challenger": 5,
   "metric": "f1",
-  "challenger_metric": 0.6744,
-  "challenger_auc": 0.7209,
-  "time": "2026-11-22T20:46:04",
-  "champion": 1,
-  "champion_metric": 0.5963,
-  "champion_auc": 0.6682,
-  "promoted": true,
-  "reason": "f1 +0.0781, ROC AUC +0.0527"
+  "challenger_metric": 0.6706,
+  "challenger_auc": 0.7187,
+  "time": "2026-11-22T20:01:14",
+  "compared_on": "challenger's test set (champion re-scored)",
+  "champion": 4,
+  "champion_metric": 0.6744,
+  "champion_auc": 0.7209,
+  "promoted": false,
+  "reason": "f1 -0.0038 (needs +0.01)"
 }

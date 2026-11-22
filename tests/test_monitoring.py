@@ -89,7 +89,8 @@ class FakeDB:
 
 def test_alertmanager_webhook_stores_alerts_and_asks_for_retraining_once():
     db = FakeDB()
-    m = Monitor(db=lambda: db)
+    started = []
+    m = Monitor(db=lambda: db, trigger=started.append)
     drift_alert = {"status": "firing", "labels": {"alertname": "DataDriftDetected", "camera": "cam-2",
                                                   "severity": "warning", "action": "retrain"},
                    "annotations": {"summary": "Data drift on camera cam-2"}, "startsAt": "2026-11-22T10:00:00Z"}
@@ -101,3 +102,10 @@ def test_alertmanager_webhook_stores_alerts_and_asks_for_retraining_once():
     assert m.handle_alertmanager({"alerts": [drift_alert]})["retrain_requests"] == [2]
     resolved = dict(drift_alert, status="resolved")
     assert m.handle_alertmanager({"alerts": [resolved]})["retrain_requests"] == []
+    assert started == [1, 2]                                   # the retraining DAG was started for each request
+
+    def airflow_down(_):
+        raise OSError("connection refused")
+    m.trigger = airflow_down
+    db.requests[-1]["status"] = "done"
+    assert m.handle_alertmanager({"alerts": [drift_alert]})["retrain_requests"] == [3]   # still recorded

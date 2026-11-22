@@ -298,7 +298,8 @@ def scores_batch(df, batch_id):
             F.lit("fight").alias("type"), F.col("message"), F.array("person_a", "person_b").alias("track_ids"),
             F.round("probability", 4).alias("score"),
             F.concat(F.lit("fight-detector v"), F.col("model_version")).alias("model_version"),
-            F.col("camera_id").alias("rover_id"), F.lit("stream").alias("source"))).alias("value"))
+            F.col("camera_id").alias("rover_id"), F.col("session"), F.col("frame"), F.col("t"),
+            F.lit("stream").alias("source"))).alias("value"))
          .write.format("kafka").option("kafka.bootstrap.servers", KAFKA).option("topic", ALERTS_TOPIC).save())
     df.unpersist()
     m.batch.labels("fight-scoring").observe(time.time() - t0)

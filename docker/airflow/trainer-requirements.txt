@@ -1,0 +1,15 @@
+# Training environment inside the Airflow image (/opt/trainer): what the retraining DAG's steps run with.
+# Kept apart from Airflow's own packages, so neither can break the other. CPU-only PyTorch.
+torch==2.2.2
+numpy<2
+scipy<1.14
+pyyaml
+requests
+mlflow==2.17.2
+dvc[s3]==3.59.1
+pathspec<0.13
+boto3>=1.35,<2
+onnx==1.17.0
+onnxruntime==1.20.1
+pyarrow==17.0.0
+psycopg[binary]>=3.2,<3.3

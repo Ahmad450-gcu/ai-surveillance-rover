@@ -99,6 +99,11 @@ stages:
   features:
     cmd: python training/features.py --upload
     deps:
+    - path: data/validated/pose/rover
+      hash: md5
+      md5: f9efc301ba745a61e11654a86c1f95e7.dir
+      size: 68491
+      nfiles: 3
     - path: data/validated/pose/rwf2000
       hash: md5
       md5: 43a7a47950f2bdbb2428044048a7a779.dir
@@ -108,15 +113,18 @@ stages:
       hash: md5
       md5: 8005c71c9898c42e648c442e187eaa4d
       size: 16446
+      isexec: true
     - path: training/features.py
       hash: md5
-      md5: 9c1584705d6b0946b83eaa970a05d356
-      size: 9636
+      md5: 25f7f616d89e1dc14bf4268631031f36
+      size: 10672
+      isexec: true
     params:
       params.yaml:
         features:
           data: data/validated/pose/rwf2000
-          extra_data: []
+          extra_data:
+          - data/validated/pose/rover
           output: data/processed/fight/rwf2000
           window: 20
           stride: 2
@@ -125,29 +133,32 @@ stages:
     outs:
     - path: data/processed/fight/rwf2000
       hash: md5
-      md5: 300481f07a487de35801160aa522b016.dir
-      size: 945203401
-      nfiles: 3
+      md5: 19b663ac2c6d287b40b7ab403cdb807e.dir
+      size: 947212420
+      nfiles: 8
   train_fight:
     cmd: python training/train_fight.py
     deps:
     - path: data/processed/fight/rwf2000
       hash: md5
-      md5: 300481f07a487de35801160aa522b016.dir
-      size: 945203401
-      nfiles: 3
+      md5: 19b663ac2c6d287b40b7ab403cdb807e.dir
+      size: 947212420
+      nfiles: 8
     - path: rover_ai/nets.py
       hash: md5
       md5: 60d21f1eccd50d9ca3883327c86d2ccc
       size: 7561
+      isexec: true
     - path: training/fightlib.py
       hash: md5
-      md5: 9a2f9370d1947de877cf779b41f1eaf1
-      size: 8664
+      md5: b6b164b4c42a30e2679dbd8a2220bc07
+      size: 8963
+      isexec: true
     - path: training/train_fight.py
       hash: md5
-      md5: 5b0be4e9ecb5342fdf2100d7a9f29cfd
-      size: 16271
+      md5: 80c083e0739081840c479b369fdedad1
+      size: 18610
+      isexec: true
     params:
       params.yaml:
         fight_model:
@@ -186,28 +197,33 @@ stages:
     outs:
     - path: models/candidate
       hash: md5
-      md5: 32c4704c5036be018475efae5a14f2f4.dir
-      size: 179401
+      md5: a96793cb83af5e91ea53eaeb2c152349.dir
+      size: 179648
       nfiles: 3
     - path: reports/fight_confusion.png
       hash: md5
-      md5: 4c1a0e9a1777579f6148f62b1b659498
-      size: 59635
+      md5: 5a2d69295b20fdb261ab81c9d437abe9
+      size: 65950
     - path: reports/fight_metrics.json
       hash: md5
-      md5: c33e822a14ef51c1d2dfe92f1da7389f
-      size: 5020
+      md5: 8ef0c995a8e6d57c78423e603956592b
+      size: 2468
     - path: reports/fight_roc.png
       hash: md5
-      md5: 3df7c8c8ba95cb3281410812abe4f778
-      size: 52495
+      md5: 82f730d3bc2fe585cae3618d15964dde
+      size: 59603
     - path: reports/fight_training.png
       hash: md5
-      md5: 1cc670b6c0c1ef9dd9e31bbfb7ffcdb2
-      size: 72008
+      md5: 41096880727a75f4f0f013c4964701f7
+      size: 76295
   drift_reference:
     cmd: python -m monitoring.reference --upload
     deps:
+    - path: data/validated/pose/rover
+      hash: md5
+      md5: f9efc301ba745a61e11654a86c1f95e7.dir
+      size: 68491
+      nfiles: 3
     - path: data/validated/pose/rwf2000
       hash: md5
       md5: 43a7a47950f2bdbb2428044048a7a779.dir
@@ -217,18 +233,39 @@ stages:
       hash: md5
       md5: 33e7bd57253f5020c7fed6e7f96fb038
       size: 4279
+      isexec: true
     - path: monitoring/reference.py
       hash: md5
-      md5: fed0898591cb4e1aa6eb0adb686ca4e8
-      size: 3168
+      md5: 735b8a33c75e158bd7a39b94eb2324ec
+      size: 3699
+      isexec: true
     params:
       params.yaml:
+        features.data: data/validated/pose/rwf2000
+        features.extra_data:
+        - data/validated/pose/rover
         monitoring:
-          data: data/validated/pose/rwf2000
           max_clips: 800
           bins: 10
     outs:
     - path: reports/drift_reference.json
       hash: md5
-      md5: 048c9f2f2a0009dab5b98568df7c6c64
-      size: 2033
+      md5: 18d5c6d4e8e125e9cef1d842760ff28b
+      size: 1937
+  feedback:
+    cmd: python -m training.feedback build
+    deps:
+    - path: data/manifests/feedback_labels.json
+      hash: md5
+      md5: 1fd83795775657088525101239e87d56
+      size: 483
+    - path: training/feedback.py
+      hash: md5
+      md5: 220773e47f7ed0567c13a4d9b760b784
+      size: 8584
+    outs:
+    - path: data/validated/pose/rover
+      hash: md5
+      md5: f9efc301ba745a61e11654a86c1f95e7.dir
+      size: 68491
+      nfiles: 3
