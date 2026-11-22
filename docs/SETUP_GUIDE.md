@@ -141,7 +141,7 @@ There are five environments to prepare: the **laptop** (C.1), the **Arduino** (C
    source .venv/bin/activate            # Windows: .venv\Scripts\activate
    pip install -r requirements.txt
    ```
-3. The two pretrained YOLO models (`models/yolo11n-pose.pt`, `models/yolo11n.pt`, about 11 MB) download automatically the first time you run the app. The **trained fight model** (`models/fight_gru.pt` + `fight_gru.json`) is already in the repository (see Part D).
+3. The two pretrained YOLO models (`models/yolo11n-pose.pt` for people/pose, `models/yolo26n.pt` for objects, about 11 MB) download automatically the first time you run the app. The **trained fight model** (`models/fight_gru.pt` + `fight_gru.json`) is already in the repository (see Part D).
 4. Get the test videos (used for software tests): `python tools/get_test_videos.py`
 
 ✅ **Check C.1:** `python run.py --source tests/videos/fight.avi --set loitering.enabled=false` opens a window. The terminal prints `Fight detection: trained model fight_gru.pt`, and the two fighters turn red with **FIGHT**.

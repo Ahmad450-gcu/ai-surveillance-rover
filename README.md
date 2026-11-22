@@ -18,11 +18,11 @@ This is an AI-powered surveillance rover (final-year project). The rover (Arduin
 | Loitering | Same person in view (or inside a loiter zone) longer than N seconds | No |
 | Unauthorised access | A person enters a restricted zone you draw on screen | No |
 | Fighting | A GRU neural network reads the skeletons of two nearby people over 2 s; alert when its last few judgements are above the threshold (rule chosen by cross-validation). The old hand-tuned rule is kept as a baseline (`fight.method: rules`) | **Yes, trained on RWF-2000** (`models/fight_gru.pt`, included) |
-| Stealing | An object (bag, laptop, phone, bottle…) sits still and becomes "guarded"; a hand touches it and it is moved away or disappears | No (pretrained YOLO11n object model) |
+| Stealing | An object (bag, laptop, phone, bottle…) sits still and becomes "guarded"; a hand touches it and it is moved away or disappears | No (pretrained YOLO26n object model) |
 
 ```
 camera / video ──► YOLO11n-pose + ByteTrack ──► per-person keypoint history ──┬─► loitering rule
-                   YOLO11n objects (every 3rd frame) ──► object states ───────┤─► restricted-zone rule
+                   YOLO26n objects (every 3rd frame) ──► object states ───────┤─► restricted-zone rule
                                                                               ├─► fight model (trained GRU)
                                                                               └─► theft detector
                                                                                      │
@@ -44,7 +44,7 @@ pip install -r requirements.txt
 python tools/get_test_videos.py    # downloads the two test videos (~17 MB)
 ```
 
-The YOLO model weights (`models/yolo11n-pose.pt`, `models/yolo11n.pt`, ~11 MB) download automatically the first time you run the app.
+The YOLO model weights (`models/yolo11n-pose.pt` for people/pose, `models/yolo26n.pt` for objects, ~11 MB) download automatically the first time you run the app.
 
 ## Service stack (Docker)
 

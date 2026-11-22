@@ -38,7 +38,7 @@ This page explains, step by step, how the whole system works and how the rover b
    | **Fighting** | A **trained neural network** (GRU) reads the skeletons of two people who are close together over 2 seconds and outputs a fight probability. Alert when two judgements in a row are above 0.73. It was trained on 1,600 RWF-2000 clips and tested on 400 it never saw (`TRAINING.md`). |
    | **Loitering** | A person has been in view longer than the time you set (20 s by default). |
    | **Restricted zone** | A person's feet enter an area you drew on the picture (guard mode only, because the camera must not move). |
-   | **Stealing** | A second model (YOLO11n objects) watches bags, laptops, phones and bottles. An object that lies still for 3 s becomes *guarded*. If a hand touches it and it then moves away or disappears, that is a stealing alert naming the person. |
+   | **Stealing** | A second model (YOLO26n objects) watches bags, laptops, phones and bottles. An object that lies still for 3 s becomes *guarded*. If a hand touches it and it then moves away or disappears, that is a stealing alert naming the person. |
 
 6. **Alert.** The laptop does five things:
    - saves a snapshot and the last 4 s of video

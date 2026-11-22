@@ -8,7 +8,7 @@ camera:
 
 models:
   pose: models/yolo11n-pose.pt      # people + 17 body keypoints (pretrained on COCO)
-  objects: models/yolo11n.pt        # bags, laptops, phones... for theft detection
+  objects: models/yolo26n.pt        # bags, laptops, phones... for theft detection (YOLO26: better recall than YOLO11 in our test)
   tracker: bytetrack.yaml
   imgsz: 480                        # lower = faster, higher = better for small/far people
   conf: 0.4
