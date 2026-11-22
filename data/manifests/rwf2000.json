@@ -1,0 +1,8 @@
+{
+  "name": "rwf2000",
+  "uri": "s3://datasets/rwf2000/RWF-2000.tar.gz",
+  "sha256": "227c01e017ee3df8753388f81bf0ab65705f5009f3f0e29f7db18bacd81a2d50",
+  "size_bytes": 12315601005,
+  "source": "https://huggingface.co/datasets/DanJoshua/RWF-2000/resolve/d8bcb9661fa6130b7295fc20712abd9e1b358036/RWF-2000.tar.gz",
+  "license": "research use only (Cheng, Cai & Li, ICPR 2020)"
+}

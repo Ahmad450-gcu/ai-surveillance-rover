@@ -17,7 +17,9 @@ Your own clips (e.g. rover recordings) laid out the same way, <split>/<Fight|Non
 Already-processed clips are skipped, so it can be stopped and restarted.
 """
 import argparse
+import hashlib
 import os
+import re
 import sys
 import tarfile
 import tempfile
@@ -124,6 +126,19 @@ def archive_from_lake():
     return local
 
 
+def clip_id(name):
+    """A safe, short file name for a clip. A few RWF-2000 names are long, mis-encoded Cyrillic, which breaks the
+    Windows path limit; those get a stable hash of the source video name, keeping the "_<n>" clip suffix so that
+    clips cut from the same video still share a prefix (used by the train/val leakage check)."""
+    if re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", name):
+        return name
+    base, sep, idx = name.rpartition("_")
+    if not (sep and idx.isdigit()):
+        base, idx = name, ""
+    h = hashlib.sha1(base.encode("utf-8", "surrogateescape")).hexdigest()[:12]
+    return f"u{h}_{idx}" if idx else f"u{h}"
+
+
 def extract_archive(out_root, args):
     out_root.mkdir(parents=True, exist_ok=True)
     tmp = Path(tempfile.mkdtemp(prefix="rwf_", dir=out_root.parent))
@@ -136,7 +151,7 @@ def extract_archive(out_root, args):
             if not (m.isfile() and m.name.lower().endswith(".avi")):
                 continue
             parts = Path(m.name).parts           # .../<train|val>/<Fight|NonFight>/<clip>.avi
-            split, label, name = parts[-3], parts[-2], Path(parts[-1]).stem
+            split, label, name = parts[-3], parts[-2], clip_id(Path(parts[-1]).stem)
             if split not in ("train", "val") or label not in ("Fight", "NonFight"):
                 continue
             dst = out_root / split / label / f"{name}.npz"
@@ -144,7 +159,7 @@ def extract_archive(out_root, args):
                 skipped += 1
                 continue
             dst.parent.mkdir(parents=True, exist_ok=True)
-            video = tmp / f"{split}_{label}_{name}.avi"     # our own file name, never a path from the archive
+            video = tmp / f"{done + skipped + len(pending)}.avi"   # our own short name, never a path from the archive
             with tar.extractfile(m) as src, open(video, "wb") as f:
                 f.write(src.read())
             pending.add(pool.submit(process, str(video), str(dst)))

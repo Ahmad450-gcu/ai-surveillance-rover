@@ -1,0 +1,98 @@
+schema: '2.0'
+stages:
+  ingest:
+    cmd: python training/ingest.py --keep
+    deps:
+    - path: mlops/lake.py
+      hash: md5
+      md5: 016ae4f3ec772ded133c35eab376e230
+      size: 4411
+    - path: training/ingest.py
+      hash: md5
+      md5: 3ea3ea38eb8c788dbb1f7b07acd06459
+      size: 4819
+    params:
+      params.yaml:
+        dataset:
+          name: rwf2000
+          url: 
+            https://huggingface.co/datasets/DanJoshua/RWF-2000/resolve/d8bcb9661fa6130b7295fc20712abd9e1b358036/RWF-2000.tar.gz
+          sha256: 
+            227c01e017ee3df8753388f81bf0ab65705f5009f3f0e29f7db18bacd81a2d50
+          size: 12315601005
+          bucket: datasets
+          key: rwf2000/RWF-2000.tar.gz
+          license: research use only (Cheng, Cai & Li, ICPR 2020)
+    outs:
+    - path: data/manifests/rwf2000.json
+      hash: md5
+      md5: ed58083d6910b9819c62cfa5b2b9b533
+      size: 385
+  extract_pose:
+    cmd: python training/extract_pose.py --workers 3 --upload --cleanup
+    deps:
+    - path: data/manifests/rwf2000.json
+      hash: md5
+      md5: ed58083d6910b9819c62cfa5b2b9b533
+      size: 385
+    - path: models/yolo11n-pose.pt
+      hash: md5
+      md5: 475cd7f66ff9f02e47cf6546bcab42a7
+      size: 6255593
+    - path: training/extract_pose.py
+      hash: md5
+      md5: 6e2432f1c1461dd0b478d33ae02c924e
+      size: 9232
+    outs:
+    - path: data/raw/pose/rwf2000
+      hash: md5
+      md5: 43a7a47950f2bdbb2428044048a7a779.dir
+      size: 30195766
+      nfiles: 2000
+  validate:
+    cmd: python training/validate_data.py --upload
+    deps:
+    - path: data/raw/pose/rwf2000
+      hash: md5
+      md5: 43a7a47950f2bdbb2428044048a7a779.dir
+      size: 30195766
+      nfiles: 2000
+    - path: mlops/validation.py
+      hash: md5
+      md5: 9efdcba173aca0281c3a262c9e552d37
+      size: 8333
+    - path: training/validate_data.py
+      hash: md5
+      md5: 7a596a5413d4a0e796d3edaada02f6b6
+      size: 5386
+    params:
+      params.yaml:
+        data_validation:
+          input: data/raw/pose/rwf2000
+          output: data/validated/pose/rwf2000
+          min_frames: 20
+          box_tolerance: 0.05
+          low_keypoint_conf: 0.3
+          max_reject_rate: 0.05
+          min_clips_per_class: 50
+          class_balance:
+          - 0.3
+          - 0.7
+    outs:
+    - path: data/validated/pose/rwf2000
+      hash: md5
+      md5: 43a7a47950f2bdbb2428044048a7a779.dir
+      size: 30195766
+      nfiles: 2000
+    - path: reports/data_profile.json
+      hash: md5
+      md5: 353458316a8b26df9c9b319e1f26bff5
+      size: 2729
+    - path: reports/data_validation.json
+      hash: md5
+      md5: c044861ed47cb974d77d58e3a36cf603
+      size: 1592
+    - path: reports/data_validation_clips.jsonl
+      hash: md5
+      md5: f51c77fde6e771a8de8d45eab2a24da5
+      size: 801793

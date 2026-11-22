@@ -9,7 +9,8 @@ __pycache__/
 .DS_Store
 
 # downloaded / generated (not redistributed)
-data/
+data/*
+!data/manifests/
 models/*.pt
 # our trained model is small and is shipped
 !models/fight_gru.pt

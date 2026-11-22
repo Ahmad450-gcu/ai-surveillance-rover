@@ -1,0 +1,69 @@
+{
+  "dataset": "rwf2000",
+  "clips": 2000,
+  "valid": 2000,
+  "rejected": 0,
+  "valid_per_split": {
+    "train/Fight": 800,
+    "train/NonFight": 800,
+    "val/Fight": 200,
+    "val/NonFight": 200
+  },
+  "reject_reasons": {},
+  "warnings": {
+    "no_pair": 420,
+    "no_people": 308,
+    "low_keypoint_conf": 18
+  },
+  "passed": true,
+  "checks": [
+    {
+      "check": "reject_rate",
+      "passed": true,
+      "blocking": true,
+      "detail": "0/2000 rejected (0.0%, limit 5%)"
+    },
+    {
+      "check": "min_clips[train/Fight]",
+      "passed": true,
+      "blocking": true,
+      "detail": "800 valid clips (need 50)"
+    },
+    {
+      "check": "min_clips[train/NonFight]",
+      "passed": true,
+      "blocking": true,
+      "detail": "800 valid clips (need 50)"
+    },
+    {
+      "check": "class_balance[train]",
+      "passed": true,
+      "blocking": true,
+      "detail": "Fight share 50.0% (allowed 30%-70%)"
+    },
+    {
+      "check": "min_clips[val/Fight]",
+      "passed": true,
+      "blocking": true,
+      "detail": "200 valid clips (need 50)"
+    },
+    {
+      "check": "min_clips[val/NonFight]",
+      "passed": true,
+      "blocking": true,
+      "detail": "200 valid clips (need 50)"
+    },
+    {
+      "check": "class_balance[val]",
+      "passed": true,
+      "blocking": true,
+      "detail": "Fight share 50.0% (allowed 30%-70%)"
+    },
+    {
+      "check": "no_train_test_leakage",
+      "passed": true,
+      "blocking": true,
+      "detail": "0 clip(s) in both train and val"
+    }
+  ]
+}

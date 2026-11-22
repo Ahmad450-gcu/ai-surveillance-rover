@@ -2,8 +2,9 @@
 
 dataset:                     # stage "ingest": source dataset -> data lake
   name: rwf2000
-  url: https://huggingface.co/datasets/DanJoshua/RWF-2000/resolve/main/RWF-2000.tar.gz
-  sha256: aba66e4bd7593b7b01c198ec13390a09ecba359ccca28d0b206cec0e8bd937f7
+  # pinned to a dataset commit, so the same bytes are downloaded every time
+  url: https://huggingface.co/datasets/DanJoshua/RWF-2000/resolve/d8bcb9661fa6130b7295fc20712abd9e1b358036/RWF-2000.tar.gz
+  sha256: 227c01e017ee3df8753388f81bf0ab65705f5009f3f0e29f7db18bacd81a2d50   # Git LFS oid on the Hub
   size: 12315601005
   bucket: datasets
   key: rwf2000/RWF-2000.tar.gz
