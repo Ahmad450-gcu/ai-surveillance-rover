@@ -34,7 +34,7 @@ Stage 1 turns every clip into the **same skeletons the live system sees** (same 
 
 ## 3. What one training sample is
 
-- **Two people** who are close to each other (closer than 3.5 body-widths, the same rule used live).
+- **Two people** who are close to each other: closer than `features.proximity` body-widths (5) and both tracked for at least `features.min_cover` of the window (30%). Both values are stored in the model's `.json`, so live detection uses exactly the rule the model was trained with.
 - **20 frames = 2 seconds** at 10 fps.
 - For each person and frame:
   - the position of all 17 keypoints relative to the pair's centre, divided by body width;
@@ -57,7 +57,7 @@ Three architectures read the same 20 × 174 window and output one probability (`
 | Architecture | Idea | Parameters |
 |---|---|---|
 | **GRU** (baseline) | Linear 174→64 + ReLU → GRU (2 layers) → [last state, mean state] → 1 | ~69 k |
-| **TCN** | 1-D convolutions over time with dilations 1, 2, 4 (sees the whole 2 s at once, fast on CPU) | ~95 k |
+| **TCN** (current champion) | 1-D convolutions over time with dilations 1, 2, … (sees the whole 2 s at once, fast on CPU); tuned: 32 channels, 2 levels | ~20 k (tuned) |
 | **ST-GCN** | Graph convolution over the **34 joints of both people** (Yan et al., 2018): edges follow each skeleton, plus "contact" edges between one person's hands/feet and the other's head/torso, plus learned edges; then convolution over time | ~45 k |
 
 Every trained model is also exported to **ONNX** (checked against PyTorch to 0.001), so it runs with ONNX Runtime, without PyTorch: smaller, faster, and the same file for the laptop, the serving API and a cloud VM.
@@ -80,24 +80,38 @@ Every trained model is also exported to **ONNX** (checked against PyTorch to 0.0
 
 ## 6. Results
 
-Latest run (numbers from `reports/fight_metrics.json`).
+Latest champion: **fight-detector v4, TCN** (numbers from `reports/fight_metrics.json` and the MLflow registry).
 
-**Alert rule chosen by 5-fold cross-validation:** 2 judgements in a row with probability ≥ **0.73**. With this rule, the out-of-fold accuracy on training clips with a close pair was 68.6% (F1 0.727).
+**How we got there** (every step is an MLflow run and a registry version, `python -m mlops.registry list`):
 
-**Final test on the 400 RWF-2000 `val` clips** (never used before this step), learned model vs. the old hand-tuned rules on the same clips:
+| Version | Change | Test F1 | Test ROC AUC | Fights found | Promotion |
+|---|---|---|---|---|---|
+| v1 | GRU baseline | 0.596 | 0.668 | 96 / 200 | first champion |
+| v2 | TCN, same features | 0.602 | 0.671 | 96 / 200 | – |
+| v3 | ST-GCN (best on clips with a pair: AUC 0.804), 51 min to train | 0.602 | 0.674 | 96 / 200 | **rejected**: F1 +0.006, needs +0.01 |
+| v4 | TCN **tuned with Optuna** (40 trials) + **looser pairing** (`min_cover` 0.5→0.3, `proximity` 3.5→5) | **0.674** | **0.721** | **116 / 200** | **promoted**: F1 +0.078, AUC +0.053 |
 
-| Metric | Learned, all 400 | Rules, all 400 | Learned, 193 with a pair | Rules, 193 with a pair |
+What made the difference:
+- **Coverage.** v1–v3 differ little because the architecture was not the bottleneck: 81 of the 200 test fights never had a close pair to judge. Accepting people tracked for 30% of the window (detection flickers on dark CCTV) and a slightly larger distance covers 139 fights (was 119) for 81 normal clips (was 72).
+- **Tuning.** The best Optuna trial is a *small* TCN (32 channels, 2 levels, ~20 k parameters) with strong augmentation (joint dropout 0.19, time stretch 0.25). Bigger models scored better on single windows but worse on whole clips: they overfit RWF-2000. Cross-validated clip AUC: 0.742 vs. 0.727 for the default settings (`reports/tuning_tcn.json`).
+
+**Alert rule chosen by 5-fold cross-validation:** 2 judgements in a row with probability ≥ **0.67** (out-of-fold F1 0.751 on training clips with a close pair).
+
+**Final test on the 400 RWF-2000 `val` clips** (never used for training, tuning or choosing the rule), learned model vs. the old hand-tuned rules on the same clips:
+
+| Metric | Learned, all 400 | Rules, all 400 | Learned, 220 with a pair | Rules, 220 with a pair |
 |---|---|---|---|---|
-| Accuracy | **67.8%** | 63.7% | **74.1%** | 62.2% |
-| Precision | 81.4% | 81.6% | 81.4% | 80.0% |
-| Recall (fights found) | **46.0%** | 35.5% | **76.0%** | 52.9% |
-| F1 | **0.588** | 0.495 | **0.786** | 0.637 |
-| ROC AUC | 0.667 | – | 0.771 | – |
-| False alarms | 21 of 200 | 16 of 200 | 21 of 72 | 16 of 72 |
+| Accuracy | **72.0%** | 63.7% | **76.8%** | 60.0% |
+| Precision | 80.6% | 81.6% | 80.6% | 80.7% |
+| Recall (fights found) | **58.0%** | 35.5% | **83.5%** | 48.2% |
+| F1 | **0.674** | 0.495 | **0.820** | 0.604 |
+| ROC AUC | 0.721 | – | 0.804 | – |
+| False alarms | 28 of 200 | 16 of 200 | 28 of 81 | 16 of 81 |
 
 **How to read this:**
-- The model finds clearly more fights than the rules (92 vs. 64 of 121 where a pair was visible) with a few more false alarms (21 vs. 16). Raise `model_threshold` if you want fewer alarms.
-- **Coverage is the main limit.** Two nearby people were detected in only 193 of the 400 test clips (121 fight, 72 normal). RWF-2000 is dark, blurry, crowded, top-down CCTV, and the pretrained pose model often misses people there. No skeleton method can catch a fight it can't see. On the rover the camera is at person height and 2–4 m away, so people are much easier to detect.
+- The model finds far more fights than the rules (116 vs. 71 of 200) at the same precision (~81%: 4 of 5 alerts are real fights). Raise `model_threshold` if you want fewer alarms.
+- **Coverage is still the main limit.** 61 test fights have no close pair at all: RWF-2000 is dark, blurry, crowded, top-down CCTV, and the pretrained pose model misses people there. No skeleton method can catch a fight it can't see. On the rover the camera is at person height and 2–4 m away, so people are much easier to detect.
+- **Known false alarm:** two people walking *shoulder to shoulder*, overlapping in the image (`tests/videos/walking.avi` at 54 s; every version so far does this). RWF-2000 has few such normal clips. Labelled rover clips of people walking together (section 8) are the fix.
 - These are numbers for CCTV footage. Measure the rover's real performance with the acting tests in `SETUP_GUIDE.md` part F.6 and `TESTING.md`.
 
 Plots: training curves (`reports/fight_training.png`), confusion matrices (`reports/fight_confusion.png`), ROC curve with the rules as a dot (`reports/fight_roc.png`).

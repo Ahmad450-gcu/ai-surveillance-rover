@@ -34,7 +34,7 @@ fight:
   model_consecutive: null           # null = the number chosen in training (judgements in a row above the threshold)
   window_seconds: 0.6               # motion is averaged over this window
   motion_threshold: 5.0             # arm speed in body-widths/second; press V in the app to see live values
-  proximity: 3.5                    # people closer than this many body-widths count as "close"
+  proximity: 3.5                    # rules: people closer than this many body-widths count as "close" (the trained model uses its own value, from its .json)
   window_frames: 12                 # temporal smoothing: look at the last N frames...
   min_positive_frames: 5            # ...and alert if at least this many looked like fighting
 

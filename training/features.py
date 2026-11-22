@@ -66,11 +66,11 @@ def load_clip(path):
     return tracks, F, float(d["width"])
 
 
-def close_pairs(tracks, s, e, proximity):
-    """Pairs of people seen in the window's last frame, tracked for at least MIN_COVER of the window,
+def close_pairs(tracks, s, e, proximity, min_cover=MIN_COVER):
+    """Pairs of people seen in the window's last frame, tracked for at least min_cover of the window,
     and close to each other (judged at the last frame, like live), closest first."""
     ids = [i for i, (_, _, alive, pr) in tracks.items()
-           if pr[e - 1] and alive[s:e].mean() >= MIN_COVER and alive[e - 1]]
+           if pr[e - 1] and alive[s:e].mean() >= min_cover and alive[e - 1]]
     out = []
     m = e - 1
     for x in range(len(ids)):
@@ -93,14 +93,14 @@ def variants(ka, ba, kb, bb, width):
 
 def clip_features(path, label, train, cfg):
     """One clip -> (training windows (n, 4, T, F) or None, eval windows [(pair, start, AB, BA)])."""
-    T, stride, prox = cfg["window"], cfg["stride"], cfg["proximity"]
+    T, stride, prox, cover = cfg["window"], cfg["stride"], cfg["proximity"], cfg.get("min_cover", MIN_COVER)
     tracks, F, width = load_clip(path)
     train_x = []
     eval_rows = []
     pair_ids = {}
     for s in range(0, F - T + 1):
         e = s + T
-        pairs = close_pairs(tracks, s, e, prox)
+        pairs = close_pairs(tracks, s, e, prox, cover)
         if train and s % stride == 0:
             # fight clip: the closest pair is (almost always) the fighters; normal clip: every close pair is a negative
             for a, b in (pairs[:1] if label else pairs):

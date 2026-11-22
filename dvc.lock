@@ -5,8 +5,8 @@ stages:
     deps:
     - path: mlops/lake.py
       hash: md5
-      md5: 016ae4f3ec772ded133c35eab376e230
-      size: 4411
+      md5: f799feb84f6d597094f2971d3b4379c5
+      size: 5177
     - path: training/ingest.py
       hash: md5
       md5: 3ea3ea38eb8c788dbb1f7b07acd06459
@@ -106,12 +106,12 @@ stages:
       nfiles: 2000
     - path: rover_ai/learned.py
       hash: md5
-      md5: e105265120a8b25e7a66e20c34c9115a
-      size: 7862
+      md5: 020b86ffb4a560addb619c637c2b7c5c
+      size: 8118
     - path: training/features.py
       hash: md5
-      md5: 1c2c12f0dc9c8aa85aae082fa6f17509
-      size: 9376
+      md5: 9c1584705d6b0946b83eaa970a05d356
+      size: 9636
     params:
       params.yaml:
         features:
@@ -120,20 +120,21 @@ stages:
           output: data/processed/fight/rwf2000
           window: 20
           stride: 2
-          proximity: 3.5
+          proximity: 5.0
+          min_cover: 0.3
     outs:
     - path: data/processed/fight/rwf2000
       hash: md5
-      md5: ec1aedcb9a815bc3053d53182ea54ddb.dir
-      size: 575549244
+      md5: 300481f07a487de35801160aa522b016.dir
+      size: 945203401
       nfiles: 3
   train_fight:
     cmd: python training/train_fight.py
     deps:
     - path: data/processed/fight/rwf2000
       hash: md5
-      md5: ec1aedcb9a815bc3053d53182ea54ddb.dir
-      size: 575549244
+      md5: 300481f07a487de35801160aa522b016.dir
+      size: 945203401
       nfiles: 3
     - path: rover_ai/nets.py
       hash: md5
@@ -145,35 +146,35 @@ stages:
       size: 8664
     - path: training/train_fight.py
       hash: md5
-      md5: a6c9d39c7ddc0f554b0e85c739e4ed2d
-      size: 15912
+      md5: 5b0be4e9ecb5342fdf2100d7a9f29cfd
+      size: 16271
     params:
       params.yaml:
         fight_model:
-          arch: gru
+          arch: tcn
           gru:
             hidden: 64
             layers: 2
             dropout: 0.3
           tcn:
-            channels: 64
-            levels: 3
+            channels: 32
+            levels: 2
             kernel: 3
-            dropout: 0.2
+            dropout: 0.195
           stgcn:
             channels: 32
             blocks: 3
             kernel: 5
             dropout: 0.2
-          lr: 0.001
-          weight_decay: 0.0001
-          batch: 128
+          lr: 0.00063
+          weight_decay: 1.2e-05
+          batch: 256
           epochs: 40
           patience: 8
           augment:
-            noise: 0.05
-            joint_dropout: 0.0
-            time_stretch: 0.0
+            noise: 0.115
+            joint_dropout: 0.185
+            time_stretch: 0.25
           consecutive_choices:
           - 2
           - 3
@@ -185,22 +186,22 @@ stages:
     outs:
     - path: models/candidate
       hash: md5
-      md5: b40e211df238ef0b6b3e06c7ab500f91.dir
-      size: 565785
+      md5: 32c4704c5036be018475efae5a14f2f4.dir
+      size: 179401
       nfiles: 3
     - path: reports/fight_confusion.png
       hash: md5
-      md5: 3d6b8015a320737a6b695668c1447012
-      size: 60618
+      md5: 4c1a0e9a1777579f6148f62b1b659498
+      size: 59635
     - path: reports/fight_metrics.json
       hash: md5
-      md5: 2163b8afd51c666523a805e664598f85
-      size: 2669
+      md5: c33e822a14ef51c1d2dfe92f1da7389f
+      size: 5020
     - path: reports/fight_roc.png
       hash: md5
-      md5: 2195d7de5617238008bce541b8451fe9
-      size: 53124
+      md5: 3df7c8c8ba95cb3281410812abe4f778
+      size: 52495
     - path: reports/fight_training.png
       hash: md5
-      md5: be180b2ecd1f56d998c58e3b25b51032
-      size: 69230
+      md5: 1cc670b6c0c1ef9dd9e31bbfb7ffcdb2
+      size: 72008

@@ -15,6 +15,7 @@ Settings (.env):  LAKE_ENDPOINT_URL (default http://localhost:9000), LAKE_ACCESS
 import hashlib
 import json
 import os
+import time
 from functools import lru_cache
 from pathlib import Path
 
@@ -51,10 +52,18 @@ def head(bucket, key):
         raise
 
 
-def upload_file(path, bucket, key, metadata=None):
+def upload_file(path, bucket, key, metadata=None, attempts=3):
+    """Upload a file (multipart above 64 MB, 2 parts at a time so a memory-capped MinIO keeps up); retried."""
     from boto3.s3.transfer import TransferConfig
-    cfg = TransferConfig(multipart_chunksize=64 * 1024 * 1024)
-    client().upload_file(str(path), bucket, key, ExtraArgs={"Metadata": metadata or {}}, Config=cfg)
+    cfg = TransferConfig(multipart_threshold=64 * 1024 * 1024, multipart_chunksize=64 * 1024 * 1024, max_concurrency=2)
+    for attempt in range(1, attempts + 1):
+        try:
+            client().upload_file(str(path), bucket, key, ExtraArgs={"Metadata": metadata or {}}, Config=cfg)
+            return
+        except Exception:
+            if attempt == attempts:
+                raise
+            time.sleep(5 * attempt)
 
 
 def download_file(bucket, key, path):
@@ -89,6 +98,13 @@ def md5_file(path, chunk=1 << 20):
     return h.hexdigest()
 
 
+def _stored_md5(bucket, key, etag):
+    """Multipart uploads have an ETag that is not the file's MD5 ("<hash>-<parts>"): use the md5 stored as metadata."""
+    if "-" not in etag:
+        return None
+    return client().head_object(Bucket=bucket, Key=key).get("Metadata", {}).get("md5")
+
+
 def sync_dir(local_dir, bucket, prefix, pattern="**/*"):
     """Upload every file under local_dir whose content differs from the lake copy. Returns (uploaded, unchanged)."""
     local_dir = Path(local_dir)
@@ -96,10 +112,11 @@ def sync_dir(local_dir, bucket, prefix, pattern="**/*"):
     uploaded = unchanged = 0
     for path in sorted(p for p in local_dir.glob(pattern) if p.is_file()):
         key = f"{prefix.rstrip('/')}/{path.relative_to(local_dir).as_posix()}"
-        if remote.get(key) == md5_file(path):
+        md5 = md5_file(path)
+        if key in remote and md5 in (remote[key], _stored_md5(bucket, key, remote[key])):
             unchanged += 1
             continue
-        client().upload_file(str(path), bucket, key)
+        upload_file(path, bucket, key, metadata={"md5": md5})
         uploaded += 1
     return uploaded, unchanged
 

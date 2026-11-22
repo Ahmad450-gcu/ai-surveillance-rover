@@ -159,7 +159,7 @@ One sketch, `firmware/rover_arduino/rover_arduino.ino`:
 
 ### Phase F – Trained model + MLOps (the "research" part)
 
-**Status:** steps 1–4 are done for RWF-2000: `training/extract_pose.py` → `training/train_fight.py`, settings in `params.yaml`, pipeline in `dvc.yaml`, optional MLflow logging, model in `models/fight_gru.pt`, used live by default. Details and results: [`TRAINING.md`](TRAINING.md). Still to do: rover clips (step 1b), the scheduler (5) and CI (6).
+**Status:** steps 1–4 are done for RWF-2000: `training/extract_pose.py` → `training/train_fight.py`, settings in `params.yaml`, pipeline in `dvc.yaml`, optional MLflow logging, models versioned in the MLflow registry (champion pulled to `models/fight_model.onnx`), used live by default. Details and results: [`TRAINING.md`](TRAINING.md). Still to do: rover clips (step 1b), the scheduler (5) and CI (6).
 1. **Data:**
    - Pose sequences extracted from **RWF-2000** (fight / non-fight)
    - Your own **recorded rover clips** (labelled with Label Studio/CVAT)

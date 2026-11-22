@@ -17,13 +17,13 @@ This is an AI-powered surveillance rover (final-year project). The rover (Arduin
 | People, body pose, ID tracking | YOLO11n-pose + ByteTrack (pretrained on COCO) | No |
 | Loitering | Same person in view (or inside a loiter zone) longer than N seconds | No |
 | Unauthorised access | A person enters a restricted zone you draw on screen | No |
-| Fighting | A GRU neural network reads the skeletons of two nearby people over 2 s; alert when its last few judgements are above the threshold (rule chosen by cross-validation). The old hand-tuned rule is kept as a baseline (`fight.method: rules`) | **Yes, trained on RWF-2000** (`models/fight_gru.pt`, included) |
+| Fighting | A trained neural network (GRU, TCN or ST-GCN, whichever the registry promoted) reads the skeletons of two nearby people over 2 s; alert when its last few judgements are above the threshold (rule chosen by cross-validation). The old hand-tuned rule is kept as a baseline (`fight.method: rules`) | **Yes, trained on RWF-2000** (`models/fight_model.onnx`, pulled from the MLflow registry) |
 | Stealing | An object (bag, laptop, phone, bottle…) sits still and becomes "guarded"; a hand touches it and it is moved away or disappears | No (pretrained YOLO26n object model) |
 
 ```
 camera / video ──► YOLO11n-pose + ByteTrack ──► per-person keypoint history ──┬─► loitering rule
                    YOLO26n objects (every 3rd frame) ──► object states ───────┤─► restricted-zone rule
-                                                                              ├─► fight model (trained GRU)
+                                                                              ├─► fight model (trained, ONNX)
                                                                               └─► theft detector
                                                                                      │
                      on-screen banner + sound + snapshot + 4 s clip + alerts.jsonl ◄─┘ (+ optional POST to backend)
@@ -110,7 +110,7 @@ python run.py --source tests/videos/walking.avi --set zones.file=tests/zone_road
 python run.py --source tests/videos/fight.avi --set loitering.enabled=false --debug
 ```
 
-**Expected:** the terminal prints `Fight detection: trained model fight_gru.pt`, and the two people fighting in the right corner turn **red** with **`FIGHT`** (the alert shows the model's probability), while bystanders stay green. `--debug` also shows each person's arm-motion value `m=` used by the rule baseline. To compare with the old rule: add `--set fight.method=rules`.
+**Expected:** the terminal prints `Fight detection: trained TCN fight_model.onnx (fight-detector vN (champion) ...)`, and the two people fighting in the right corner turn **red** with **`FIGHT`** (the alert shows the model's probability), while bystanders stay green. `--debug` also shows each person's arm-motion value `m=` used by the rule baseline. To compare with the old rule: add `--set fight.method=rules`.
 
 ### 5. Stealing (logic test)
 
@@ -190,7 +190,7 @@ Zones are saved to `zones.json` and loaded again next time.
 
 Measured on an Intel i7-8569U laptop, CPU only: pose ≈ 50 ms/frame at 480 px, objects ≈ 75 ms every 3rd frame → **about 10–12 FPS**.
 
-Fight model (trained GRU) vs. the hand-tuned rule on the 400 RWF-2000 test clips: see [`docs/TRAINING.md`](docs/TRAINING.md#6-results) and `reports/fight_metrics.json`.
+Fight models (GRU, TCN, ST-GCN) vs. the hand-tuned rule on the 400 RWF-2000 test clips: see [`docs/TRAINING.md`](docs/TRAINING.md#6-results) and `reports/fight_metrics.json`.
 
 Fight rule (baseline):
 
@@ -222,7 +222,8 @@ rover_ai/
   vision.py              YOLO pose + object detection + tracking
   tracks.py              per-person keypoint history and arm-motion energy
   rules.py               loitering + restricted-zone rules
-  learned.py             trained fight model: features, GRU, live pair scoring
+  learned.py             trained fight model: features, ONNX/PyTorch loading, live pair scoring
+  nets.py                fight model architectures: GRU, TCN, ST-GCN
   fight.py               rule-based fight detector (baseline / fallback, single-image check)
   theft.py               object guarding / taking detector
   alerts.py              cooldown, snapshot, clip, JSON log, sound, backend POST
@@ -245,7 +246,7 @@ tools/
   rover_drive.py         drive the rover once from the laptop (calibration)
   stream_rwf_sample.py   pulls N clips of RWF-2000 without downloading all 12 GB
   make_demo_reel.py      builds the demo video (normal / fight / loitering scenes) for the video-based demo
-models/                  YOLO weights (downloaded) + fight_gru.pt/.json (trained here)
+models/                  YOLO weights (downloaded) + fight_model.onnx/.pt/.json (champion, from  python -m mlops.registry pull)
 ```
 
 ## Datasets and credits

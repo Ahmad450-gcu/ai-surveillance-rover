@@ -141,10 +141,10 @@ There are five environments to prepare: the **laptop** (C.1), the **Arduino** (C
    source .venv/bin/activate            # Windows: .venv\Scripts\activate
    pip install -r requirements.txt
    ```
-3. The two pretrained YOLO models (`models/yolo11n-pose.pt` for people/pose, `models/yolo26n.pt` for objects, about 11 MB) download automatically the first time you run the app. The **trained fight model** (`models/fight_gru.pt` + `fight_gru.json`) is already in the repository (see Part D).
+3. The two pretrained YOLO models (`models/yolo11n-pose.pt` for people/pose, `models/yolo26n.pt` for objects, about 11 MB) download automatically the first time you run the app. The **trained fight model** comes from the model registry: with the MLOps stack running (`docker compose up -d`), `python -m mlops.registry pull` downloads the champion to `models/fight_model.onnx` + `.json` (see Part D). Without it the app uses the hand-tuned rules.
 4. Get the test videos (used for software tests): `python tools/get_test_videos.py`
 
-✅ **Check C.1:** `python run.py --source tests/videos/fight.avi --set loitering.enabled=false` opens a window. The terminal prints `Fight detection: trained model fight_gru.pt`, and the two fighters turn red with **FIGHT**.
+✅ **Check C.1:** `python run.py --source tests/videos/fight.avi --set loitering.enabled=false` opens a window. The terminal prints `Fight detection: trained TCN fight_model.onnx (fight-detector vN (champion), ...)`, and the two fighters turn red with **FIGHT**.
 
 Every new terminal needs `cd "Ahmad Rover"` and `source .venv/bin/activate` first.
 
@@ -240,14 +240,15 @@ The camera is about 15 cm above the floor. For the video demo, point it **straig
 
 The fight detector is a **trained neural network**, not hand-set thresholds:
 
-- **Model:** a small GRU (`models/fight_gru.pt`) that reads the skeletons of two nearby people over 2 seconds and outputs the probability that they are fighting.
-- **Trained on:** RWF-2000 (1,600 real CCTV clips). Tested on 400 clips it never saw. The numbers are in `models/fight_gru.json` and `reports/fight_metrics.json`.
+- **Model:** a small neural network (`models/fight_model.onnx`; GRU, TCN or ST-GCN) that reads the skeletons of two nearby people over 2 seconds and outputs the probability that they are fighting.
+- **Trained on:** RWF-2000 (1,600 real CCTV clips). Tested on 400 clips it never saw. The numbers are in `models/fight_model.json`, `reports/fight_metrics.json` and the MLflow UI (http://localhost:5000).
 - **Switch:** `config.yaml` → `fight.method: model`. Use `rules` for the old thresholds. If the model file is missing, the app falls back to the rules automatically.
 
 You **don't need to retrain** to use the rover. To retrain or improve it (for example with your own rover recordings), follow `docs/TRAINING.md`. In short:
 ```bash
-python training/extract_pose.py      # videos -> skeletons (about 2 h for RWF-2000)
-python training/train_fight.py       # skeletons -> model + metrics + plots (a few minutes)
+dvc repro                            # videos -> skeletons -> checks -> features -> model (registry @challenger)
+python -m mlops.registry promote     # challenger becomes champion only if it beats it on the test clips
+python -m mlops.registry pull        # download the champion to models/fight_model.onnx
 ```
 
 Loitering (time in view), restricted zones (an area you draw) and stealing (a guarded object moved after a hand touch) remain **rules**. Loitering and zones are *settings the operator chooses*, so there's nothing to learn from data. For stealing, no public dataset matches the rover's view; your labelled rover recordings (F.7) are what a future stealing model would be trained on.
@@ -458,7 +459,7 @@ Alerts, snapshots and clips stay in `alerts/` and in the dashboard history.
 | Rover doesn't move from the laptop | Token in `config.yaml` ≠ the Pi's `--token`; the status line says "rover offline" |
 | Dashboard won't open on the phone | Same hotspot? Use the IP printed by `python -m backend`; on macOS allow incoming connections for Python |
 | Dashboard has no live video | `backend.url` not set in `config.yaml` |
-| Terminal says "fight_gru.pt not found, using hand-tuned rules" | The model files are missing from `models/`; get them from the repository or retrain (`docs/TRAINING.md`) |
+| Terminal says "fight_model.onnx not found, using hand-tuned rules" | The model is missing from `models/`: `python -m mlops.registry pull`, or retrain (`docs/TRAINING.md`) |
 | Too many / too few fight alerts | Adjust `fight.model_threshold` (F.6) |
 | People not detected | More light; people at 2–4 m; camera tilt (C.5.2) |
 | Rover turns too far / not enough | Recalibrate `turn_90_ms` (F.4.4) |

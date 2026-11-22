@@ -108,12 +108,12 @@ MIN_COVER = 0.5                 # a person must have been tracked for at least h
 PAIR_GAP = 1.0                  # a pair keeps its alert history through detection gaps of up to 1 s
 
 
-def resample_track(hist, t_end, T):
+def resample_track(hist, t_end, T, min_cover=MIN_COVER):
     """Track history -> (T,17,3) keypoints and (T,4) boxes at 10 Hz ending at t_end (linear interpolation;
-    before the track started, its first pose is repeated). None if tracked for less than MIN_COVER of the window."""
+    before the track started, its first pose is repeated). None if tracked for less than min_cover of the window."""
     times = np.array([h[0] for h in hist])
     t_query = t_end - (T - 1 - np.arange(T)) / FPS
-    if (t_query >= times[0] - 0.05).mean() < MIN_COVER:
+    if (t_query >= times[0] - 0.05).mean() < min_cover:
         return None
     k = np.stack([h[1] for h in hist])
     b = np.stack([h[2] for h in hist])
@@ -134,7 +134,9 @@ class LearnedFightDetector:
         self.model, self.meta = load_model(Path(root) / cfg["model"])
         self.T = self.meta["window"]
         self.thr = cfg.get("model_threshold") or self.meta["threshold"]
-        self.proximity = cfg["proximity"]
+        # pairing rules the model was trained with (stored in its .json); config.yaml only for older models
+        self.proximity = self.meta.get("proximity") or cfg["proximity"]
+        self.min_cover = self.meta.get("min_cover", MIN_COVER)
         self.need = cfg.get("model_consecutive") or self.meta.get("consecutive", 3)
         self.window = cfg["window_seconds"]
         self.pairs = {}                 # pair -> last `need` decisions (above threshold or not)
@@ -151,7 +153,7 @@ class LearnedFightDetector:
             close = np.linalg.norm(a.center - b.center) < self.proximity * s or box_iou(a.box, b.box) > 0.05
             if not close:
                 continue
-            wa, wb = resample_track(a.hist, t, self.T), resample_track(b.hist, t, self.T)
+            wa, wb = resample_track(a.hist, t, self.T, self.min_cover), resample_track(b.hist, t, self.T, self.min_cover)
             if wa is None or wb is None:
                 continue
             seen.add(key)

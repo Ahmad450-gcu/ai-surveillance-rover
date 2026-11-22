@@ -190,6 +190,7 @@ def main():
     minutes = (time.time() - t0) / 60
     meta = dict(arch=arch, n_params=count_params(model), window=fcfg["window"], fps=FPS, threshold=thr,
                 consecutive=need, pair_gap=PAIR_GAP, proximity=fcfg["proximity"],
+                min_cover=fcfg.get("min_cover", 0.5),
                 trained_on="RWF-2000 train split (pose from YOLO11n-pose + ByteTrack)", data_version=data_version(),
                 clips=dict(train=n_train, fit=n_train - n_dev, dev=n_dev, test=len(test_ids), folds=P["folds"]),
                 windows=int(len(windows_of(data["train"], train_ids[n_dev:])[1])), augment=P.get("augment"),

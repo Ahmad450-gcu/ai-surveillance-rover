@@ -27,23 +27,24 @@ features:                    # stage "features": validated clips -> model-ready 
   output: data/processed/fight/rwf2000
   window: 20                 # frames per sample at 10 fps = 2 seconds
   stride: 2                  # training windows start every 0.2 s
-  proximity: 3.5             # only pairs closer than this many body-widths are judged (same as live)
+  proximity: 5.0             # only pairs closer than this many body-widths are judged (stored with the model, used live)
+  min_cover: 0.3             # both people tracked for at least this share of the window (stored with the model, used live)
 
 # Training settings (training/train_fight.py), tracked by DVC and logged to MLflow with every run
 fight_model:
-  arch: gru                  # gru | tcn | stgcn (rover_ai/nets.py); settings of each below
+  arch: tcn                  # gru | tcn | stgcn (rover_ai/nets.py); settings of each below
   gru:   {hidden: 64, layers: 2, dropout: 0.3}
-  tcn:   {channels: 64, levels: 3, kernel: 3, dropout: 0.2}
+  tcn:   {channels: 32, levels: 2, kernel: 3, dropout: 0.195}   # tuned: reports/tuning_tcn.json
   stgcn: {channels: 32, blocks: 3, kernel: 5, dropout: 0.2}
-  lr: 0.001
-  weight_decay: 0.0001
-  batch: 128
+  lr: 0.00063
+  weight_decay: 0.000012
+  batch: 256
   epochs: 40
   patience: 8                # stop when the dev score hasn't improved for this many epochs
   augment:                   # applied to training windows only
-    noise: 0.05              # Gaussian noise on every feature
-    joint_dropout: 0.0       # chance that a joint is "not detected" for the whole window (like a missed keypoint)
-    time_stretch: 0.0        # chance of slowing the window down (replay the last 75-100% of it over 2 s)
+    noise: 0.115             # Gaussian noise on every feature
+    joint_dropout: 0.185     # chance that a joint is "not detected" for the whole window (like a missed keypoint)
+    time_stretch: 0.25       # chance of slowing the window down (replay the last 75-100% of it over 2 s)
   consecutive_choices: [2, 3, 4, 5]   # alert rule: this many judgements in a row above the threshold (chosen by CV)
   folds: 5                   # cross-validation folds on the train split (choose threshold + judgements in a row)
   seed: 0

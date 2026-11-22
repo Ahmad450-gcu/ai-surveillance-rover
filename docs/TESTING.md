@@ -59,7 +59,7 @@ Test IDs **TC-01…TC-14**, **TC-59**, **TC-61** and **TC-62** match Table 4.8 o
 | TC-60 | `python tests/test_learned.py` | 9 × **[PASS]** (features, model, live resampling) |
 | TC-61 | `python tests/test_patrol.py` | 5 × **[PASS]** (blocked path → turn; scene in front → stay; move on after 60 s; hold after alert; alert restarts watching) |
 | TC-62 | `python tools/make_demo_reel.py`, then `python run.py --source data/demo/demo_reel.mp4 --set loitering.seconds=10` | Scene 1: no alert; scene 2: a FIGHT alert for each fight clip (live: one per 10 s); scene 3: LOITERING (times in `data/demo/demo_reel.txt`) |
-| TC-59 | `python -c "import json; m=json.load(open('models/fight_gru.json')); print(m['test_learned'], m['test_rules'])"` | The trained model's F1 on the 400 RWF-2000 test clips is higher than the rules' (retrain: `docs/TRAINING.md`) |
+| TC-59 | `python -c "import json; m=json.load(open('models/fight_model.json')); print(m['test_learned'], m['test_rules'])"` | The trained model's F1 on the 400 RWF-2000 test clips is higher than the rules' (retrain: `docs/TRAINING.md`) |
 | TC-15 | `python run.py` (laptop webcam) | You appear with a skeleton; press **Z**, draw a zone, lean into it → alert |
 
 If the test videos are missing: `python tools/get_test_videos.py`.
