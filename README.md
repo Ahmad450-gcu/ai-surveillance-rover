@@ -8,7 +8,7 @@ This is an AI-powered surveillance rover (final-year project). The rover (Arduin
 
 **MLOps pipeline (streaming, data lake, model registry, monitoring, drift detection, automated retraining, CI/CD): [`docs/MLOPS_ARCHITECTURE.md`](docs/MLOPS_ARCHITECTURE.md).**
 
-**Building the full rover: follow [`docs/SETUP_GUIDE.md`](docs/SETUP_GUIDE.md)**, one guide from wiring and environments to testing the physical rover step by step. Training the AI: [`docs/TRAINING.md`](docs/TRAINING.md). Testing from 0 to 100: [`docs/TESTING.md`](docs/TESTING.md). Project plan: [`docs/ROADMAP.md`](docs/ROADMAP.md).
+**Building the full rover: follow [`docs/SETUP_GUIDE.md`](docs/SETUP_GUIDE.md)**, one guide from wiring and environments to testing the physical rover step by step. Training the AI: [`docs/TRAINING.md`](docs/TRAINING.md). Model serving API: [`docs/SERVING.md`](docs/SERVING.md). Testing from 0 to 100: [`docs/TESTING.md`](docs/TESTING.md). Project plan: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## What it detects
 
@@ -52,7 +52,7 @@ The backend, database, data lake and model registry run as containers (needs Doc
 
 ```bash
 cp .env.example .env               # Windows: copy .env.example .env   — then replace every "change-me"
-docker compose up -d --build       # PostgreSQL, MinIO data lake, MLflow, backend
+docker compose up -d --build       # PostgreSQL, MinIO data lake, MLflow, backend, model serving
 docker compose ps                  # wait until every service shows "healthy"
 docker compose exec backend python -m backend.manage create-user admin
 ```
@@ -61,6 +61,7 @@ docker compose exec backend python -m backend.manage create-user admin
 |---|---|---|
 | Backend + dashboard | http://localhost:8080 | alerts, clips, rover control (`/health`, `/ready` for probes) |
 | MLflow | http://localhost:5000 | experiment tracking and model registry |
+| Model serving | http://127.0.0.1:8000/v1/models | the registry's champion models over REST, hot-reloaded on promotion; `/metrics` for Prometheus ([`docs/SERVING.md`](docs/SERVING.md)) |
 | MinIO console | http://localhost:9001 | data lake buckets (log in with `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD`) |
 | PostgreSQL | localhost:5432 | operational database |
 
@@ -233,6 +234,9 @@ rover_ai/
   services.py            stream reader, live view server, backend link
   draw.py                on-screen overlay
   geometry.py            keypoint helpers
+serving/
+  app.py                 model serving API (FastAPI): predict, models, reload, metrics
+  store.py               loads @champion from the MLflow registry, hot reload
 tests/
   images/                sample images
   videos/                test videos (downloaded by tools/get_test_videos.py)
@@ -241,6 +245,8 @@ tests/
   test_protocol.py       Arduino <-> Pi message format test
   test_learned.py        fight model features / resampling test
   test_patrol.py         patrol behaviour test (obstacle vs. scene, watch limit, alert hold)
+  test_models.py         fight model architectures, ONNX export, augmentation, promotion gate
+  test_serving.py        model serving API: predictions, input checks, hot reload, remote client
 tools/
   get_test_videos.py     downloads the test videos
   rover_drive.py         drive the rover once from the laptop (calibration)

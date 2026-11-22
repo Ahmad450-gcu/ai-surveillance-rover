@@ -8,6 +8,7 @@ Features     : body-relative keypoint positions and velocities, normalised by bo
                plus the distance between the two people and how fast it changes
 Output       : probability that the pair is fighting
 """
+import base64
 import json
 from collections import deque
 from itertools import combinations
@@ -85,8 +86,79 @@ class OnnxModel:
         return self
 
 
+class RemoteModel:
+    """The model behind the serving API (serving/app.py), called like the local one: (B, T, F) -> logits (B,).
+    url = http://<host>:8000/v1/models/<activity>. Its settings (window, threshold, pairing rules) come from the
+    server, and are refreshed when the server hot-reloads another registry version (on_change callbacks)."""
+
+    def __init__(self, url, timeout=2.0):
+        from urllib.parse import urlsplit
+        self.url = url.rstrip("/")
+        parts = urlsplit(self.url)
+        self.https, self.host, self.path = parts.scheme == "https", parts.netloc, parts.path
+        self.timeout = timeout
+        self.conn = None                    # one kept-alive connection (a new TCP connection per frame is slow)
+        self.on_change = []
+        self.meta = self._fetch_meta()
+
+    def _request(self, path, body=None):
+        import http.client
+        data = None if body is None else json.dumps(body).encode()
+        for attempt in (1, 2):              # the server may have closed an idle kept-alive connection
+            if self.conn is None:
+                cls = http.client.HTTPSConnection if self.https else http.client.HTTPConnection
+                self.conn = cls(self.host, timeout=self.timeout)
+            try:
+                if self.conn.sock is None:
+                    import socket
+                    self.conn.connect()
+                    self.conn.sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)   # no Nagle delay
+                self.conn.request("GET" if data is None else "POST", path, body=data,
+                                  headers={"Content-Type": "application/json"})
+                r = self.conn.getresponse()
+                payload = r.read()
+            except (OSError, http.client.HTTPException) as e:
+                self.conn.close()
+                self.conn = None
+                if attempt == 2:
+                    raise OSError(f"serving API: {e}") from e
+                continue
+            if r.status != 200:
+                raise OSError(f"serving API {path}: HTTP {r.status} {payload[:200]!r}")
+            return json.loads(payload)
+
+    def _fetch_meta(self):
+        info = self._request(self.path)
+        return dict(window=info["window"], threshold=info["threshold"], consecutive=info.get("consecutive"),
+                    proximity=info.get("proximity"), min_cover=info.get("min_cover"), arch={"type": info["arch"]},
+                    registry=dict(model=info.get("registered_model"), version=info.get("version"),
+                                  alias="served", run_id=info.get("run_id")), served_by=self.url)
+
+    def __call__(self, x):
+        x = x.numpy() if hasattr(x, "numpy") else np.asarray(x, np.float32)
+        x = np.ascontiguousarray(x, "<f4")                  # compact binary payload (base64 float32)
+        out = self._request(self.path + "/predict",
+                            {"shape": list(x.shape), "data_b64": base64.b64encode(x.tobytes()).decode()})
+        if str(out.get("model_version")) != str(self.meta["registry"]["version"]):     # server reloaded a model
+            self.meta = self._fetch_meta()
+            for callback in self.on_change:
+                callback(self.meta)
+        return torch.tensor(out["logits"], dtype=torch.float32)
+
+    def eval(self):
+        return self
+
+
+def is_remote(ref):
+    return str(ref).startswith(("http://", "https://"))
+
+
 def load_model(path):
-    """models/<name>.pt (PyTorch weights) or models/<name>.onnx, with the settings in models/<name>.json."""
+    """models/<name>.pt (PyTorch weights) or models/<name>.onnx, with the settings in models/<name>.json,
+    or the URL of a model on the serving API."""
+    if is_remote(path):
+        model = RemoteModel(str(path))
+        return model, model.meta
     path = Path(path)
     meta = json.loads(path.with_suffix(".json").read_text())
     if path.suffix == ".onnx":
@@ -99,9 +171,16 @@ def load_model(path):
 
 def pair_probability(model, ka, ba, kb, bb):
     """Average over both person orders, so the answer doesn't depend on who is 'A'."""
-    x = np.stack([window_features(ka, ba, kb, bb), window_features(kb, bb, ka, ba)])
+    return pair_probabilities(model, [(ka, ba, kb, bb)])[0]
+
+
+def pair_probabilities(model, pairs):
+    """Several pairs [(ka, ba, kb, bb), ...] in one model call (one request when the model is remote)."""
+    x = np.stack([w for ka, ba, kb, bb in pairs
+                  for w in (window_features(ka, ba, kb, bb), window_features(kb, bb, ka, ba))])
     with torch.no_grad():
-        return float(torch.sigmoid(model(torch.from_numpy(x))).mean())
+        p = torch.sigmoid(model(torch.from_numpy(x))).numpy().reshape(-1, 2).mean(1)
+    return [float(v) for v in p]
 
 
 MIN_COVER = 0.5                 # a person must have been tracked for at least half the window (1 s)
@@ -131,24 +210,46 @@ class LearnedFightDetector:
     """Drop-in replacement for the rule-based FightDetector, driven by the trained model."""
 
     def __init__(self, cfg, root):
-        self.model, self.meta = load_model(Path(root) / cfg["model"])
-        self.T = self.meta["window"]
-        self.thr = cfg.get("model_threshold") or self.meta["threshold"]
-        # pairing rules the model was trained with (stored in its .json); config.yaml only for older models
-        self.proximity = self.meta.get("proximity") or cfg["proximity"]
-        self.min_cover = self.meta.get("min_cover", MIN_COVER)
-        self.need = cfg.get("model_consecutive") or self.meta.get("consecutive", 3)
+        ref = cfg["model"] if is_remote(cfg["model"]) else Path(root) / cfg["model"]
+        self.cfg = cfg
+        self.model, meta = load_model(ref)
+        self.apply_meta(meta)
+        if isinstance(self.model, RemoteModel):          # the server switched to another registry version
+            self.model.on_change.append(self.apply_meta)
         self.window = cfg["window_seconds"]
+        self.failed_at = None                            # serving API unreachable since (remote model)
         self.pairs = {}                 # pair -> last `need` decisions (above threshold or not)
         self.last = {}                  # pair -> time it was last judged
         self.probs = {}
 
+    def apply_meta(self, meta):
+        cfg = self.cfg
+        self.meta = meta
+        self.T = meta["window"]
+        self.thr = cfg.get("model_threshold") or meta["threshold"]
+        # pairing rules the model was trained with (stored in its .json); config.yaml only for older models
+        self.proximity = meta.get("proximity") or cfg["proximity"]
+        self.min_cover = meta.get("min_cover") or MIN_COVER
+        self.need = cfg.get("model_consecutive") or meta.get("consecutive") or 3
+
+    def judge(self, windows, t):
+        """Probabilities of all candidate pairs of this frame (one model call), or None if the serving API
+        can't be reached (no judgements; warned every 10 s)."""
+        try:
+            probs = pair_probabilities(self.model, windows)
+        except OSError as e:                             # connection refused, timeout, HTTP error
+            if self.failed_at is None or t - self.failed_at > 10:
+                print(f"Fight model: {e}; no fight judgements until it is back")
+                self.failed_at = t
+            return None
+        self.failed_at = None
+        return probs
+
     def update(self, tracks, t, flags):
         events = []
         energy = {tr.id: tr.motion_energy(self.window) for tr in tracks}
-        seen = set()
+        candidates, windows = [], []
         for a, b in combinations(sorted(tracks, key=lambda tr: tr.id), 2):
-            key = (a.id, b.id)
             s = (a.scale + b.scale) / 2
             close = np.linalg.norm(a.center - b.center) < self.proximity * s or box_iou(a.box, b.box) > 0.05
             if not close:
@@ -156,8 +257,13 @@ class LearnedFightDetector:
             wa, wb = resample_track(a.hist, t, self.T, self.min_cover), resample_track(b.hist, t, self.T, self.min_cover)
             if wa is None or wb is None:
                 continue
+            candidates.append((a, b))
+            windows.append((*wa, *wb))
+        probs = self.judge(windows, t) if windows else []
+        seen = set()
+        for (a, b), p in zip(candidates, probs or []):
+            key = (a.id, b.id)
             seen.add(key)
-            p = pair_probability(self.model, *wa, *wb)
             self.probs[key] = p
             if t - self.last.get(key, t) > PAIR_GAP:      # lost for too long: start counting again
                 self.pairs.pop(key, None)

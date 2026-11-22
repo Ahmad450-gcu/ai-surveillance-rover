@@ -1,12 +1,12 @@
 # AI Surveillance Rover – service stack.
 #
 #   cp .env.example .env            # then fill in the passwords
-#   docker compose up -d            # core: PostgreSQL, MinIO (data lake), MLflow, backend
+#   docker compose up -d            # core: PostgreSQL, MinIO (data lake), MLflow, backend, model serving
 #   docker compose ps               # all services should become "healthy"
 #
 # Later phases add services behind profiles so a small machine runs only what it needs:
 #   --profile streaming   Kafka + Spark          --profile monitoring  Prometheus, Grafana, Alertmanager
-#   --profile mlops       Airflow, model serving
+#   --profile mlops       Airflow
 #
 # Every setting comes from .env, so the same file runs on a laptop or a cloud VM (e.g. AWS EC2).
 name: rover
@@ -120,6 +120,33 @@ services:
       - "${BACKEND_PORT:-8080}:8080"
     mem_limit: 256m
 
+  # ---------------- model serving: the registry's @champion of every activity model, hot-reloaded ----------------
+  serving:
+    build:
+      context: .
+      dockerfile: docker/serving/Dockerfile
+    image: ${IMAGE_PREFIX:-rover}/serving:${IMAGE_TAG:-latest}
+    <<: *restart
+    depends_on:
+      mlflow:
+        condition: service_healthy
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      SERVING_MODELS: ${SERVING_MODELS:-fight=fight-detector}     # activity=registered-model, comma separated
+      MODEL_SOURCE: ${MODEL_SOURCE:-registry}                     # registry | local (./models mounted below)
+      MODEL_ALIAS: ${MODEL_ALIAS:-champion}
+      MODEL_DIR: /models
+      RELOAD_SECONDS: ${RELOAD_SECONDS:-60}                       # promotion / rollback reaches serving within this
+      SERVING_ADMIN_TOKEN: ${SERVING_ADMIN_TOKEN:-}
+      ORT_THREADS: ${ORT_THREADS:-2}
+    volumes:
+      - servingcache:/cache                   # downloaded model versions (a restart doesn't download again)
+      - ./models:/models:ro                   # only used with MODEL_SOURCE=local
+    ports:
+      - "${SERVING_PORT:-8000}:8000"
+    mem_limit: 384m
+
 volumes:
   pgdata:
   miniodata:
+  servingcache:

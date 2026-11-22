@@ -60,6 +60,9 @@ Test IDs **TC-01…TC-14**, **TC-59**, **TC-61** and **TC-62** match Table 4.8 o
 | TC-61 | `python tests/test_patrol.py` | 5 × **[PASS]** (blocked path → turn; scene in front → stay; move on after 60 s; hold after alert; alert restarts watching) |
 | TC-62 | `python tools/make_demo_reel.py`, then `python run.py --source data/demo/demo_reel.mp4 --set loitering.seconds=10` | Scene 1: no alert; scene 2: a FIGHT alert for each fight clip (live: one per 10 s); scene 3: LOITERING (times in `data/demo/demo_reel.txt`) |
 | TC-59 | `python -c "import json; m=json.load(open('models/fight_model.json')); print(m['test_learned'], m['test_rules'])"` | The trained model's F1 on the 400 RWF-2000 test clips is higher than the rules' (retrain: `docs/TRAINING.md`) |
+| TC-63 | `docker compose up -d serving`, then `curl http://127.0.0.1:8000/v1/models` | The service is "healthy" in `docker compose ps` and lists `fight-detector` with the champion's version |
+| TC-64 | `python run.py --source tests/videos/fight.avi --set loitering.enabled=false --set fight.model=http://127.0.0.1:8000/v1/models/fight` | The start-up line says `(... (served), threshold ...)` and the same FIGHT alert as TC-04 appears (model served by the API) |
+| TC-65 | `python -m mlops.registry set-alias champion 1`, wait ≤ 60 s, `curl http://127.0.0.1:8000/v1/models/fight`; then `set-alias champion <previous>` | The service switches to v1 by itself (rollback without a restart), then back |
 | TC-15 | `python run.py` (laptop webcam) | You appear with a skeleton; press **Z**, draw a zone, lean into it → alert |
 
 If the test videos are missing: `python tools/get_test_videos.py`.
@@ -179,6 +182,7 @@ Afterwards, open each alert in the dashboard and label it **real** or **false al
 | TC-49 | Switch off the Wi-Fi hotspot for 20 s during patrol | Rover stops; detection window says "Waiting for rover video"; everything resumes when Wi-Fi returns |
 | TC-50 | Reboot the Pi during a session | Video and control come back within ~1–2 minutes without restarting the laptop programs |
 | TC-51 | Brighter room / reflections on the screen / screen further away | Note at what point people on the screen stop being detected (limitation for the report) |
+| TC-66 | `docker compose stop serving` during TC-64, then `docker compose start serving` | The detector prints `Fight model: serving API: ...; no fight judgements until it is back`, keeps running (no crash), and FIGHT alerts resume once the service is back |
 | TC-52 | Run until the motor battery is low | Note the battery life and whether turns get shorter (re-calibrate `turn_90_ms`) |
 
 ---

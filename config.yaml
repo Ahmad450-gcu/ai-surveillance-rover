@@ -30,6 +30,7 @@ fight:
   enabled: true
   method: model                     # model = trained network (GRU/TCN/ST-GCN), rules = hand-tuned thresholds below
   model: models/fight_model.onnx    # the registry champion: python -m mlops.registry pull (.pt also works); rules if missing
+                                    # or the serving API: http://127.0.0.1:8000/v1/models/fight (always the current champion)
   model_threshold: null             # null = use the threshold chosen during training (in fight_model.json)
   model_consecutive: null           # null = the number chosen in training (judgements in a row above the threshold)
   window_seconds: 0.6               # motion is averaged over this window

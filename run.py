@@ -134,14 +134,19 @@ def rover_info(controller):
 def make_fight_detector(fcfg):
     """Trained model if available (fight.method: model), otherwise the hand-tuned rules."""
     if fcfg.get("method", "rules") == "model":
-        path = ROOT / fcfg.get("model", "models/fight_model.onnx")
-        if path.exists():
-            from rover_ai.learned import LearnedFightDetector
-            det = LearnedFightDetector(fcfg, ROOT)
+        from rover_ai.learned import LearnedFightDetector, is_remote
+        ref = fcfg.get("model", "models/fight_model.onnx")
+        path = ROOT / ref if not is_remote(ref) else None
+        if path is None or path.exists():
+            try:
+                det = LearnedFightDetector(fcfg, ROOT)
+            except OSError as e:                                  # serving API not reachable at start-up
+                print(f"Fight detection: serving API {ref} unreachable ({e}), using hand-tuned rules")
+                return FightDetector(fcfg)
             reg = det.meta.get("registry", {})
             ver = f"{reg['model']} v{reg['version']} ({reg['alias']}), " if reg else ""
-            print(f"Fight detection: trained {det.meta['arch'].get('type', 'gru').upper()} {path.name} "
-                  f"({ver}threshold {det.thr:.2f})")
+            print(f"Fight detection: trained {det.meta['arch'].get('type', 'gru').upper()} "
+                  f"{ref if path is None else path.name} ({ver}threshold {det.thr:.2f})")
             return det
         print(f"Fight detection: {path.name} not found, using hand-tuned rules "
               "(deploy the registry champion: python -m mlops.registry pull)")

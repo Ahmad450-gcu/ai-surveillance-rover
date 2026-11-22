@@ -67,7 +67,7 @@ flowchart LR
 | Invalid / rejected data | Dead-letter topic + `rejected/` bucket with the rejection reason | – | ⬜ Phase 5 |
 | Data lake | **MinIO** (S3-compatible). Buckets `raw`, `validated`, `rejected`, `labelled`, `processed` (partitioned by rover and date, Parquet), plus `datasets`, `mlflow` (artifact store) and `dvc` (DVC remote). Versioning on curated buckets; raw footage expires after 30 days, rejected records after 14 | 9000 / 9001 | ✅ buckets (Phase 1); data in Phase 2 |
 | Operational store | **PostgreSQL**: alerts, predictions, telemetry, users; metadata for MLflow and Airflow | 5432 | ✅ |
-| Model serving | **FastAPI** inference service, ONNX Runtime, loads `@champion` of each activity from the registry, hot-reloads | 8000 | ⬜ Phase 4 |
+| Model serving | **FastAPI** inference service (`serving/`), ONNX Runtime, loads `@champion` of each activity from the registry over MLflow's REST API, hot-reloads on promotion/rollback, Prometheus `/metrics` ([SERVING.md](SERVING.md)) | 8000 | ✅ |
 | App backend | FastAPI backend (auth, alerts, clips, rover commands), SQLAlchemy on PostgreSQL, `/health` + `/ready` probes | 8080 | ✅ |
 | Monitoring & alerting | **Prometheus**, **Grafana** (dashboards as code), **Alertmanager** | 9090 / 3000 / 9093 | ⬜ Phase 6 |
 | Data drift | Scheduled drift job: **Evidently** reports + Population Stability Index on features and prediction confidence; concept drift from the false-alarm rate of labelled alerts | – | ⬜ Phase 6 |
@@ -141,7 +141,7 @@ Compose profiles keep memory use manageable (`core`, `streaming`, `mlops`, `moni
 | 1 | Docker foundation: PostgreSQL, MinIO, MLflow; backend on PostgreSQL | ✅ |
 | 2 | Data layer: lake buckets, DVC remote on MinIO, dataset versioning, data validation | ✅ |
 | 3 | Training pipeline: features stage, 3 architectures, augmentation, Optuna tuning, MLflow registry (champion/challenger), ONNX export, model tests | ✅ |
-| 4 | Model serving API | ⬜ |
+| 4 | Model serving API: FastAPI + ONNX Runtime container, registry `@champion` with hot reload, Prometheus metrics, remote model client in the detector | ✅ |
 | 5 | Streaming: Kafka + Spark Structured Streaming, dead-letter handling | ⬜ |
 | 6 | Monitoring: Prometheus, Grafana, Alertmanager, drift detection | ⬜ |
 | 7 | Automated retraining with Airflow, feedback labels, champion/challenger | ⬜ |

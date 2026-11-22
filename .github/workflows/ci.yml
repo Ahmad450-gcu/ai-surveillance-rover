@@ -46,4 +46,4 @@ jobs:
           cp .env.example .env
           docker compose config --quiet
       - name: Build images
-        run: docker compose build backend mlflow
+        run: docker compose build backend mlflow serving
