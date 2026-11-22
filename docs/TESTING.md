@@ -50,7 +50,7 @@ Test IDs **TC-01…TC-14**, **TC-59**, **TC-61** and **TC-62** match Table 4.8 o
 | ID | Command | Pass if |
 |---|---|---|
 | TC-01 | `python run.py --source tests/images` | Both images show people with skeletons (press a key to go to the next) |
-| TC-02 | `python run.py --source tests/videos/walking.avi --set loitering.seconds=8` | Banner **LOITERING: ID 45 in view for 8s** appears after ~30 s |
+| TC-02 | `python run.py --source tests/videos/walking.avi --set loitering.seconds=8` | Banner **LOITERING: ID 45 in view for 8s** appears at about 61 s of the video |
 | TC-03 | `python run.py --source tests/videos/walking.avi --set zones.file=tests/zone_road.json --set zones.anchor=feet --set loitering.enabled=false` | People entering the red zone get **UNAUTHORISED ACCESS** alerts |
 | TC-04 | `python run.py --source tests/videos/fight.avi --set loitering.enabled=false --debug` | The two fighters (IDs 9, 15) turn red with **FIGHT**; bystanders stay green |
 | TC-05 | Run TC-02's command and watch the whole video | **No** FIGHT alert on normal walking. *Known result:* the rules give 0; the trained model gives 1 false alert at ~54 s, where two people stand shoulder to shoulder. Recorded as an open issue (fix: add such scenes as NonFight clips and retrain) |
@@ -63,6 +63,8 @@ Test IDs **TC-01…TC-14**, **TC-59**, **TC-61** and **TC-62** match Table 4.8 o
 | TC-63 | `docker compose up -d serving`, then `curl http://127.0.0.1:8000/v1/models` | The service is "healthy" in `docker compose ps` and lists `fight-detector` with the champion's version |
 | TC-64 | `python run.py --source tests/videos/fight.avi --set loitering.enabled=false --set fight.model=http://127.0.0.1:8000/v1/models/fight` | The start-up line says `(... (served), threshold ...)` and the same FIGHT alert as TC-04 appears (model served by the API) |
 | TC-65 | `python -m mlops.registry set-alias champion 1`, wait ≤ 60 s, `curl http://127.0.0.1:8000/v1/models/fight`; then `set-alias champion <previous>` | The service switches to v1 by itself (rollback without a restart), then back |
+| TC-67 | `docker compose --profile streaming up -d --build`, then `python tools/stream_smoke_test.py` | 4 × **[PASS]**: every kind of invalid record reaches the dead-letter topic with its reason; the fight clip is scored by Spark (predictions in PostgreSQL), raises exactly one FIGHT alert, and the alert appears in the backend |
+| TC-68 | `python run.py --source tests/videos/fight.avi --set loitering.enabled=false --set streaming.enabled=true` | Start-up says "the stream scores fights"; the FIGHT alert (IDs 5 and 9) appears in the dashboard marked `[stream]` |
 | TC-15 | `python run.py` (laptop webcam) | You appear with a skeleton; press **Z**, draw a zone, lean into it → alert |
 
 If the test videos are missing: `python tools/get_test_videos.py`.
@@ -183,6 +185,8 @@ Afterwards, open each alert in the dashboard and label it **real** or **false al
 | TC-50 | Reboot the Pi during a session | Video and control come back within ~1–2 minutes without restarting the laptop programs |
 | TC-51 | Brighter room / reflections on the screen / screen further away | Note at what point people on the screen stop being detected (limitation for the report) |
 | TC-66 | `docker compose stop serving` during TC-64, then `docker compose start serving` | The detector prints `Fight model: serving API: ...; no fight judgements until it is back`, keeps running (no crash), and FIGHT alerts resume once the service is back |
+| TC-69 | `docker compose stop kafka`, then run TC-68's command; then `docker compose start kafka` during a second run | First run: "Kafka ... not reachable", and fights are judged on the laptop (red FIGHT on screen); second run: switches back to the stream when Kafka answers |
+| TC-70 | `docker compose stop backend`, run `python tools/frames.py replay tests/data/fight_frames.jsonl.gz`, wait 30 s, `docker compose start backend` | `docker compose logs alert-bridge` shows retries; the alert is stored once the backend is back (nothing lost) |
 | TC-52 | Run until the motor battery is low | Note the battery life and whether turns get shorter (re-calibrate `turn_90_ms`) |
 
 ---

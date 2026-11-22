@@ -15,22 +15,58 @@ from itertools import combinations
 from pathlib import Path
 
 import numpy as np
-import torch
 
 from .events import Event
-from .geometry import KP_CONF, body_center, body_scale, box_iou
-from .nets import FightGRU, build_model  # noqa: F401  (FightGRU: older imports)
+from .geometry import KP_CONF, TORSO, body_center, body_scale, box_iou
+
+# No PyTorch import here: live detection with an ONNX or served model, and the stream workers, run without it.
+# Every model below takes a numpy array (B, T, F) and returns numpy logits (B,).
+
+
+def __getattr__(name):              # older imports: from rover_ai.learned import FightGRU, build_model
+    if name in ("FightGRU", "build_model"):
+        from . import nets
+        return getattr(nets, name)
+    raise AttributeError(name)
 
 FPS = 10.0                      # the model works on 10 frames per second
 FLIP_IDX = [0, 2, 1, 4, 3, 6, 5, 8, 7, 10, 9, 12, 11, 14, 13, 16, 15]   # left <-> right keypoints
 N_FEAT = 2 * (17 * 3 + 17 * 2) + 4
 
 
-def _person_frames(kpts, boxes):
-    """Per-frame body centre (T,2) and one body width for the whole window."""
+def _person_frames_slow(kpts, boxes):
+    """Reference version of _person_frames (per frame, with geometry.body_center / body_scale); used by tests."""
     centers = np.stack([body_center(k, b) for k, b in zip(kpts, boxes)])
     scale = float(np.median([body_scale(k, b) for k, b in zip(kpts, boxes)]))
     return centers, scale
+
+
+_SH, _HP = [5, 6], [11, 12]                     # shoulders, hips (COCO)
+
+
+def _masked_mean(pts, vis):
+    """Mean of the visible points per frame: pts (T,n,2), vis (T,n) -> (T,2) (NaN where none is visible)."""
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return (pts * vis[..., None]).sum(1) / vis.sum(1)[:, None]
+
+
+def _person_frames(kpts, boxes):
+    """Per-frame body centre (T,2) and one body width for the whole window: the same rules as
+    geometry.body_center / body_scale, computed for all frames at once (about 10x faster)."""
+    k, b = np.asarray(kpts), np.asarray(boxes)
+    vis = k[:, :, 2] > KP_CONF
+    torso = vis[:, TORSO]
+    box_c = np.stack([(b[:, 0] + b[:, 2]) / 2, (b[:, 1] + b[:, 3]) / 2], axis=1)
+    centers = np.where(torso.any(1)[:, None], _masked_mean(k[:, TORSO, :2], torso), box_c)
+    both = vis[:, 5] & vis[:, 6]
+    width = np.where(both, np.linalg.norm(k[:, 5, :2] - k[:, 6, :2], axis=1), -np.inf)
+    sh, hp = vis[:, _SH], vis[:, _HP]
+    trunk = np.where(sh.any(1) & hp.any(1),
+                     0.75 * np.linalg.norm(_masked_mean(k[:, _SH, :2], sh) - _masked_mean(k[:, _HP, :2], hp), axis=1),
+                     -np.inf)
+    best = np.maximum(width, trunk)
+    scales = np.where(np.isfinite(best), np.maximum(best, 1.0), np.maximum((b[:, 3] - b[:, 1]) / 4, 1.0))
+    return centers, float(np.median(scales))
 
 
 def window_features(ka, ba, kb, bb):
@@ -79,8 +115,8 @@ class OnnxModel:
         self.input = self.session.get_inputs()[0].name
 
     def __call__(self, x):
-        x = x.numpy() if hasattr(x, "numpy") else np.asarray(x, np.float32)
-        return torch.from_numpy(self.session.run(None, {self.input: x.astype(np.float32)})[0])
+        x = np.asarray(x, np.float32)
+        return self.session.run(None, {self.input: x.astype(np.float32)})[0].reshape(-1)
 
     def eval(self):
         return self
@@ -135,7 +171,6 @@ class RemoteModel:
                                   alias="served", run_id=info.get("run_id")), served_by=self.url)
 
     def __call__(self, x):
-        x = x.numpy() if hasattr(x, "numpy") else np.asarray(x, np.float32)
         x = np.ascontiguousarray(x, "<f4")                  # compact binary payload (base64 float32)
         out = self._request(self.path + "/predict",
                             {"shape": list(x.shape), "data_b64": base64.b64encode(x.tobytes()).decode()})
@@ -143,7 +178,7 @@ class RemoteModel:
             self.meta = self._fetch_meta()
             for callback in self.on_change:
                 callback(self.meta)
-        return torch.tensor(out["logits"], dtype=torch.float32)
+        return np.asarray(out["logits"], np.float32)
 
     def eval(self):
         return self
@@ -163,10 +198,27 @@ def load_model(path):
     meta = json.loads(path.with_suffix(".json").read_text())
     if path.suffix == ".onnx":
         return OnnxModel(path), meta
-    model = build_model(meta["arch"])
-    model.load_state_dict(torch.load(path, map_location="cpu"))
-    model.eval()
-    return model, meta
+    return TorchModel(path, meta), meta
+
+
+class TorchModel:
+    """PyTorch weights (models/<name>.pt), with the same numpy interface as the ONNX model."""
+
+    def __init__(self, path, meta):
+        import torch
+
+        from .nets import build_model
+        self.torch = torch
+        self.net = build_model(meta["arch"])
+        self.net.load_state_dict(torch.load(path, map_location="cpu"))
+        self.net.eval()
+
+    def __call__(self, x):
+        with self.torch.no_grad():
+            return self.net(self.torch.from_numpy(np.asarray(x, np.float32))).numpy().reshape(-1)
+
+    def eval(self):
+        return self
 
 
 def pair_probability(model, ka, ba, kb, bb):
@@ -178,9 +230,8 @@ def pair_probabilities(model, pairs):
     """Several pairs [(ka, ba, kb, bb), ...] in one model call (one request when the model is remote)."""
     x = np.stack([w for ka, ba, kb, bb in pairs
                   for w in (window_features(ka, ba, kb, bb), window_features(kb, bb, ka, ba))])
-    with torch.no_grad():
-        p = torch.sigmoid(model(torch.from_numpy(x))).numpy().reshape(-1, 2).mean(1)
-    return [float(v) for v in p]
+    logits = np.asarray(model(x.astype(np.float32)), np.float64).reshape(-1, 2)
+    return [float(v) for v in (1.0 / (1.0 + np.exp(-logits))).mean(1)]
 
 
 MIN_COVER = 0.5                 # a person must have been tracked for at least half the window (1 s)
@@ -231,6 +282,20 @@ class LearnedFightDetector:
         self.proximity = meta.get("proximity") or cfg["proximity"]
         self.min_cover = meta.get("min_cover") or MIN_COVER
         self.need = cfg.get("model_consecutive") or meta.get("consecutive") or 3
+
+    def get_state(self):
+        """Per-pair alert history as plain data (the stream keeps it between micro-batches)."""
+        return {"pairs": {f"{a}-{b}": list(h) for (a, b), h in self.pairs.items()},
+                "last": {f"{a}-{b}": v for (a, b), v in self.last.items()}}
+
+    def set_state(self, state):
+        def key(k):
+            a, b = k.split("-")
+            return int(a), int(b)
+        state = state or {}
+        self.pairs = {key(k): deque(v, maxlen=self.need) for k, v in state.get("pairs", {}).items()}
+        self.last = {key(k): v for k, v in state.get("last", {}).items()}
+        self.probs = {}
 
     def judge(self, windows, t):
         """Probabilities of all candidate pairs of this frame (one model call), or None if the serving API

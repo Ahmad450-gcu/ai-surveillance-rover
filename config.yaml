@@ -39,6 +39,14 @@ fight:
   window_frames: 12                 # temporal smoothing: look at the last N frames...
   min_positive_frames: 5            # ...and alert if at least this many looked like fighting
 
+streaming:                          # Kafka + Spark pipeline (docker compose --profile streaming up -d)
+  enabled: false                    # true = publish every frame's skeletons to Kafka (rover_ai/streaming.py)
+  bootstrap: 127.0.0.1:9094         # Kafka address seen from this computer (EXTERNAL listener)
+  topic: rover.pose-frames
+  camera_id: rover-1                # names this camera in Kafka, the lake, predictions and alerts
+  fight_on_server: true             # while Kafka is reachable the stream scores fights (alerts reach the backend via
+                                    # the alert bridge); if Kafka is down this computer scores them itself
+
 theft:
   enabled: true
   classes: [backpack, handbag, suitcase, laptop, cell phone, book, bottle]

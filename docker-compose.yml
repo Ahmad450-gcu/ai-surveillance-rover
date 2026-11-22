@@ -5,7 +5,7 @@
 #   docker compose ps               # all services should become "healthy"
 #
 # Later phases add services behind profiles so a small machine runs only what it needs:
-#   --profile streaming   Kafka + Spark          --profile monitoring  Prometheus, Grafana, Alertmanager
+#   --profile streaming   Kafka, Spark, alert bridge   --profile monitoring  Prometheus, Grafana, Alertmanager
 #   --profile mlops       Airflow
 #
 # Every setting comes from .env, so the same file runs on a laptop or a cloud VM (e.g. AWS EC2).
@@ -146,7 +146,111 @@ services:
       - "${SERVING_PORT:-8000}:8000"
     mem_limit: 384m
 
+  # ================= streaming profile:  docker compose --profile streaming up -d =================
+  # ---------------- Kafka (KRaft, single broker): the frame / alert event log ----------------
+  kafka:
+    image: apache/kafka:3.9.1
+    profiles: ["streaming"]
+    <<: *restart
+    environment:
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk   # KRaft cluster id (base64 UUID), fixed so the data volume stays valid
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+      # containers use kafka:9092; the detector on the host (or the rover) uses EXTERNAL
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://${KAFKA_EXTERNAL_HOST:-127.0.0.1}:${KAFKA_PORT:-9094}
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_HEAP_OPTS: -Xmx256m -Xms256m
+    volumes:
+      - kafkadata:/var/lib/kafka/data
+    ports:
+      - "${KAFKA_PORT:-9094}:9094"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+    mem_limit: 640m
+
+  # one-shot job: creates the topics (partitions, retention)
+  kafka-init:
+    image: apache/kafka:3.9.1
+    profiles: ["streaming"]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ./docker/kafka/init.sh:/init.sh:ro
+    entrypoint: ["/bin/bash", "/init.sh"]
+    restart: "no"
+
+  # ---------------- Spark Structured Streaming: validation, dead-letter, lake, fight scoring ----------------
+  spark:
+    build:
+      context: .
+      dockerfile: docker/spark/Dockerfile
+    image: ${IMAGE_PREFIX:-rover}/spark:${IMAGE_TAG:-latest}
+    profiles: ["streaming"]
+    <<: *restart
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      serving:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      SERVING_URL: http://serving:8000/v1/models/fight
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-rover}
+      LAKE_ENDPOINT_URL: http://minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MAX_LAG_SECONDS: ${STREAM_MAX_LAG_SECONDS:-300}
+    volumes:
+      - sparkcheckpoints:/checkpoints          # Kafka offsets + scoring state: a restart continues where it stopped
+    ports:
+      - "${SPARK_UI_PORT:-4040}:4040"         # Spark UI: Structured Streaming tab (input rate, batch duration)
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:4040/api/v1/applications')"]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    mem_limit: 1536m
+
+  # ---------------- alert bridge: topic rover.alerts -> backend ----------------
+  alert-bridge:
+    image: ${IMAGE_PREFIX:-rover}/spark:${IMAGE_TAG:-latest}
+    profiles: ["streaming"]
+    <<: *restart
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      backend:
+        condition: service_healthy
+    command: ["python3", "-m", "streaming.bridge"]
+    environment:
+      KAFKA_BOOTSTRAP: kafka:9092
+      BACKEND_URL: http://backend:8080
+      DEVICE_TOKEN: ${ROVER__BACKEND__DEVICE_TOKEN}
+    mem_limit: 128m
+
 volumes:
   pgdata:
   miniodata:
   servingcache:
+  kafkadata:
+  sparkcheckpoints:

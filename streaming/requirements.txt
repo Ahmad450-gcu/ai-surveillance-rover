@@ -1,0 +1,8 @@
+# Spark / alert-bridge container only (see docker/spark/Dockerfile); PySpark itself comes with the base image
+numpy<2
+pandas==2.2.3
+pyarrow==17.0.0
+pyyaml
+psycopg[binary]==3.2.3
+boto3==1.35.36
+confluent-kafka==2.6.1

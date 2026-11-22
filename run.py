@@ -167,6 +167,15 @@ def run_stream(source, cfg, args, controller=None):
     fight = make_fight_detector(cfg["fight"]) if cfg["fight"]["enabled"] else None
     theft = TheftDetector(cfg["theft"]) if cfg["theft"]["enabled"] else None
 
+    publisher = None
+    if cfg["streaming"]["enabled"]:
+        from rover_ai.streaming import FramePublisher
+        publisher = FramePublisher(cfg["streaming"], cfg["streaming"]["camera_id"])
+        role = ("the stream scores fights" if publisher.server_scores_fights
+                else "fights scored here" + ("" if publisher.fight_on_server else " (fight_on_server: false)"))
+        print(f"Streaming: frames -> Kafka {cfg['streaming']['bootstrap']} topic {publisher.topic} "
+              f"as camera {publisher.camera_id!r}, session {publisher.session}; {role}")
+
     backend = live_view = None
     if cfg["backend"]["url"]:
         from rover_ai.services import BackendLink, LiveView
@@ -199,6 +208,8 @@ def run_stream(source, cfg, args, controller=None):
             alerts.push_frame(frame, t)
 
             persons, items, fresh = detector(frame)
+            if publisher:
+                publisher.publish(frame_idx, t, frame.shape, persons, items)
             people.update(persons, t)
             tracks = people.visible(t)
             n_people = len(tracks)
@@ -214,7 +225,8 @@ def run_stream(source, cfg, args, controller=None):
                 events += loiter.update(tracks, zones, t, frame.shape, flags)
             if access and zones_active:
                 events += access.update(tracks, zones, t, frame.shape, flags)
-            if fight:
+            # with streaming, the stream judges fights; this computer does it only while Kafka is unreachable
+            if fight and not (publisher and publisher.server_scores_fights):
                 ev, energy = fight.update(tracks, t, flags)
                 events += ev
             if theft:
@@ -307,6 +319,9 @@ def run_stream(source, cfg, args, controller=None):
 
     if controller:
         controller.client.stop()
+    if publisher:
+        publisher.close()                    # deliver the frames still queued
+        print(f"Streaming: {publisher.sent} frames delivered to Kafka, {publisher.failed} failed")
     src.release()
     if writer:
         writer.release()
@@ -342,7 +357,7 @@ def run_images(paths, cfg, args):
             f = flags.get(p.track_id, set())
             draw_person(view, p.kpts, p.box, label_for(p.track_id, f), person_color(f))
         for e in events:
-            alerts.handle(e, view, 0, save_clip=False)
+            alerts.handle(e, view, time.time(), save_clip=False)      # images: wall-clock cooldown, as before
         summary = f"{len(persons)} people, {len(items)} objects" + (f" -> {len(events)} alert(s)" if events else ", nothing suspicious")
         print(f"{path.name}: {summary}")
         out = out_dir / f"{path.stem}_result.jpg"

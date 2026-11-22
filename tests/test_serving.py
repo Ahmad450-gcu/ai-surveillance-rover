@@ -86,7 +86,7 @@ def test_predict_matches_onnx_runtime_in_both_payload_forms(local_store, tmp_pat
         b = client.post("/v1/models/fight/predict",
                         json={"shape": list(x.shape), "data_b64": base64.b64encode(x.astype("<f4").tobytes()).decode()}
                         ).json()
-        expected = OnnxModel(tmp_path / "models" / "fight_model.onnx")(x).numpy()
+        expected = OnnxModel(tmp_path / "models" / "fight_model.onnx")(x)
         assert np.allclose(a["logits"], expected, atol=1e-4) and np.allclose(b["logits"], expected, atol=1e-4)
         assert a["above_threshold"] == [p >= 0.5 for p in a["probabilities"]]
         assert windows_scored(client) - before == 6
@@ -167,14 +167,14 @@ def test_detector_remote_model_follows_the_served_version(live_server):
     url, reg, store, tmp_path = live_server
     model = RemoteModel(url + "/v1/models/fight")
     assert model.meta["arch"]["type"] == "gru" and model.meta["window"] == T
-    x = torch.from_numpy(x_batch(4))
-    assert np.allclose(model(x).numpy(), OnnxModel(tmp_path / "v1" / "model.onnx")(x).numpy(), atol=1e-4)
+    x = x_batch(4)
+    assert np.allclose(model(x), OnnxModel(tmp_path / "v1" / "model.onnx")(x), atol=1e-4)
     seen = []
     model.on_change.append(seen.append)
     reg.champion = "2"
     store.refresh()                                                   # what the watcher thread does
     out = model(x)                                                    # answered by v2; the client notices
-    assert np.allclose(out.numpy(), OnnxModel(tmp_path / "v2" / "model.onnx")(x).numpy(), atol=1e-4)
+    assert np.allclose(out, OnnxModel(tmp_path / "v2" / "model.onnx")(x), atol=1e-4)
     assert seen and seen[0]["threshold"] == 0.7 and model.meta["arch"]["type"] == "tcn"
 
 

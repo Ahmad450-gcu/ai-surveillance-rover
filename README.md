@@ -8,7 +8,7 @@ This is an AI-powered surveillance rover (final-year project). The rover (Arduin
 
 **MLOps pipeline (streaming, data lake, model registry, monitoring, drift detection, automated retraining, CI/CD): [`docs/MLOPS_ARCHITECTURE.md`](docs/MLOPS_ARCHITECTURE.md).**
 
-**Building the full rover: follow [`docs/SETUP_GUIDE.md`](docs/SETUP_GUIDE.md)**, one guide from wiring and environments to testing the physical rover step by step. Training the AI: [`docs/TRAINING.md`](docs/TRAINING.md). Model serving API: [`docs/SERVING.md`](docs/SERVING.md). Testing from 0 to 100: [`docs/TESTING.md`](docs/TESTING.md). Project plan: [`docs/ROADMAP.md`](docs/ROADMAP.md).
+**Building the full rover: follow [`docs/SETUP_GUIDE.md`](docs/SETUP_GUIDE.md)**, one guide from wiring and environments to testing the physical rover step by step. Training the AI: [`docs/TRAINING.md`](docs/TRAINING.md). Model serving API: [`docs/SERVING.md`](docs/SERVING.md). Streaming pipeline (Kafka + Spark): [`docs/STREAMING.md`](docs/STREAMING.md). Testing from 0 to 100: [`docs/TESTING.md`](docs/TESTING.md). Project plan: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## What it detects
 
@@ -64,6 +64,8 @@ docker compose exec backend python -m backend.manage create-user admin
 | Model serving | http://127.0.0.1:8000/v1/models | the registry's champion models over REST, hot-reloaded on promotion; `/metrics` for Prometheus ([`docs/SERVING.md`](docs/SERVING.md)) |
 | MinIO console | http://localhost:9001 | data lake buckets (log in with `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD`) |
 | PostgreSQL | localhost:5432 | operational database |
+
+With `docker compose --profile streaming up -d --build` it also starts **Kafka, Spark Structured Streaming** (UI http://localhost:4040) and the alert bridge; `python run.py --set streaming.enabled=true` then sends every frame's skeletons through Kafka and Spark ([`docs/STREAMING.md`](docs/STREAMING.md)).
 
 Stop with `docker compose down` (data is kept in Docker volumes; `docker compose down -v` deletes it). With the stack running, set `ROVER__BACKEND__URL=http://localhost:8080` in `.env` so `run.py` sends its alerts there, and training runs log to MLflow automatically (`MLFLOW_TRACKING_URI`). The Pi agent must be started with the same token as `ROVER__ROVER__TOKEN` in `.env`.
 
@@ -237,6 +239,10 @@ rover_ai/
 serving/
   app.py                 model serving API (FastAPI): predict, models, reload, metrics
   store.py               loads @champion from the MLflow registry, hot reload
+streaming/
+  spark_job.py           Spark Structured Streaming: validation, dead-letter queue, lake sink, fight scoring
+  scoring.py             stateful stream scoring (same tracks + fight detector as the edge)
+  bridge.py              Kafka alerts -> backend
 tests/
   images/                sample images
   videos/                test videos (downloaded by tools/get_test_videos.py)
@@ -247,10 +253,14 @@ tests/
   test_patrol.py         patrol behaviour test (obstacle vs. scene, watch limit, alert hold)
   test_models.py         fight model architectures, ONNX export, augmentation, promotion gate
   test_serving.py        model serving API: predictions, input checks, hot reload, remote client
+  test_streaming.py      stream scoring = edge scoring (micro-batches, state, cooldowns), alert bridge
+  data/                  recorded skeleton frames of fight.avi (stream test fixture)
 tools/
   get_test_videos.py     downloads the test videos
   rover_drive.py         drive the rover once from the laptop (calibration)
   stream_rwf_sample.py   pulls N clips of RWF-2000 without downloading all 12 GB
+  frames.py              record a video's skeletons / replay them into Kafka
+  stream_smoke_test.py   end-to-end check of the running Kafka + Spark pipeline
   make_demo_reel.py      builds the demo video (normal / fight / loitering scenes) for the video-based demo
 models/                  YOLO weights (downloaded) + fight_model.onnx/.pt/.json (champion, from  python -m mlops.registry pull)
 ```

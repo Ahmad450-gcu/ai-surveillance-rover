@@ -32,13 +32,15 @@ class AlertManager:
         self.buffer.append((t, frame))
 
     def handle(self, event, snapshot, t, save_clip=True):
-        now = time.time()
-        if now - self.last.get(event.key, -1e9) < self.cooldown:
+        # cooldowns run on the detector's clock t (wall time for live cameras, video time for files), so a video
+        # gives the same alerts however fast it is processed -- and the same as the streaming pipeline
+        if t - self.last.get(event.key, -1e9) < self.cooldown:
             return False
-        if now - self.last_type.get(event.kind, -1e9) < self.type_cooldown:
+        if t - self.last_type.get(event.kind, -1e9) < self.type_cooldown:
             return False                    # same kind of incident just reported (e.g. 3 people fighting = 1 alert)
-        self.last[event.key] = now
-        self.last_type[event.kind] = now
+        self.last[event.key] = t
+        self.last_type[event.kind] = t
+        now = time.time()
         self.recent.append((now, event.message))
 
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")

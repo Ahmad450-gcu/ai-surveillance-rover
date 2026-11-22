@@ -29,8 +29,8 @@ def test_saved_model_loads_as_pt_and_onnx_with_same_output(kind, tmp_path):
     export_onnx(m, tmp_path / "m.onnx", 20)
     (tmp_path / "m.json").write_text(json.dumps({"arch": arch, "window": 20, "threshold": 0.5}))
     x = torch.randn(5, 20, N_FEAT)
-    a = load_model(tmp_path / "m.pt")[0](x).detach().numpy()
-    b = load_model(tmp_path / "m.onnx")[0](x).numpy()
+    a = load_model(tmp_path / "m.pt")[0](x.numpy())
+    b = load_model(tmp_path / "m.onnx")[0](x.numpy())
     assert np.abs(a - b).max() < 1e-4
 
 
@@ -106,3 +106,15 @@ def test_promotion_needs_a_real_improvement(tmp_path, monkeypatch):
     d = new_version(0.70, 0.71)
     assert d["promoted"] and d["champion"] == 1
     assert str(client.get_model_version_by_alias("fight-test", "champion").version) == "4"
+
+
+def test_fast_person_frames_equal_the_per_frame_rules():
+    """The vectorised body centre / width equals geometry.body_center / body_scale frame by frame."""
+    from rover_ai.learned import _person_frames, _person_frames_slow
+    rng = np.random.default_rng(0)
+    for _ in range(300):
+        k = rng.uniform(0, 600, (20, 17, 3)).astype(np.float32)
+        k[..., 2] = rng.choice([0.1, 0.9], (20, 17), p=[0.5, 0.5])          # many joints missing, some frames empty
+        b = np.concatenate([rng.uniform(0, 300, (20, 2)), rng.uniform(300, 600, (20, 2))], 1).astype(np.float32)
+        (c1, s1), (c2, s2) = _person_frames_slow(k, b), _person_frames(k, b)
+        assert np.allclose(c1, c2, atol=1e-3) and s1 == pytest.approx(s2, rel=1e-6)

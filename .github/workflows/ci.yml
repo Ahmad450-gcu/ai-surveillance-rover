@@ -44,6 +44,6 @@ jobs:
       - name: Validate docker-compose.yml
         run: |
           cp .env.example .env
-          docker compose config --quiet
+          docker compose --profile streaming config --quiet
       - name: Build images
-        run: docker compose build backend mlflow serving
+        run: docker compose --profile streaming build backend mlflow serving spark

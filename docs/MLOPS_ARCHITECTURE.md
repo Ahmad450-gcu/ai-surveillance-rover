@@ -62,8 +62,8 @@ flowchart LR
 | Reference box | Our component | Port | Status |
 |---|---|---|---|
 | Data sources (IoT / sensors) | Rover camera + telemetry; `run.py` turns video into structured records | – | ✅ |
-| Streaming ingestion | **Apache Kafka** (KRaft, single broker). Topics: `rover.pose_frames`, `rover.objects`, `rover.telemetry`, `predictions`, `alerts`, `dlq` | 9092 | ⬜ Phase 5 |
-| Stream processing & data quality | **Spark Structured Streaming**: schema validation, missing/late data (watermarking), deduplication, range checks, feature engineering, prediction | 7077 | ⬜ Phase 5 |
+| Streaming ingestion | **Apache Kafka** (KRaft, single broker, idempotent producers). Topics: `rover.pose-frames` (key = camera, 3 partitions), `rover.pose-frames.dlq`, `rover.alerts` ([STREAMING.md](STREAMING.md)) | 9094 (host) | ✅ |
+| Stream processing & data quality | **Spark Structured Streaming** (`streaming/spark_job.py`): 11 validation rules (schema, types, missing fields, shapes, ranges, late / future events) → dead-letter topic + `rejected/`; valid frames → Parquet in `validated/`; stateful fight scoring per camera session (`applyInPandasWithState`, same code as the edge) via the serving API → PostgreSQL `predictions` + `rover.alerts`; alert bridge → backend | 4040 (UI) | ✅ |
 | Invalid / rejected data | Dead-letter topic + `rejected/` bucket with the rejection reason | – | ⬜ Phase 5 |
 | Data lake | **MinIO** (S3-compatible). Buckets `raw`, `validated`, `rejected`, `labelled`, `processed` (partitioned by rover and date, Parquet), plus `datasets`, `mlflow` (artifact store) and `dvc` (DVC remote). Versioning on curated buckets; raw footage expires after 30 days, rejected records after 14 | 9000 / 9001 | ✅ buckets (Phase 1); data in Phase 2 |
 | Operational store | **PostgreSQL**: alerts, predictions, telemetry, users; metadata for MLflow and Airflow | 5432 | ✅ |
@@ -106,10 +106,10 @@ tuning (Optuna, CV on the train split only) feeds the best settings back into pa
 
 ## 5. Real-time production flow
 
-1. The rover streams video to the perception service, which publishes per-frame pose and object records to Kafka.
+1. The rover streams video to the perception service (`run.py`: YOLO pose + tracking), which publishes per-frame pose and object records to Kafka.
 2. Spark validates each record. Invalid records go to the dead-letter topic. Valid ones are written to the lake and turned into 2-second windows.
 3. Each window is scored by every registered activity (ML models through the serving API; rule-based activities inline).
-4. Predictions go to PostgreSQL. Positive ones go to the `alerts` topic, from which the backend stores the alert, saves the clip and notifies the app.
+4. Predictions go to PostgreSQL. Alerts go to the `rover.alerts` topic, from which the alert bridge stores them in the backend (dashboard and app).
 5. **Graceful degradation:** if the streaming stack is unavailable, the detector falls back to in-process inference so the rover keeps protecting the area.
 
 ## 6. Monitoring, drift and retraining (the feedback loop)
@@ -142,7 +142,7 @@ Compose profiles keep memory use manageable (`core`, `streaming`, `mlops`, `moni
 | 2 | Data layer: lake buckets, DVC remote on MinIO, dataset versioning, data validation | ✅ |
 | 3 | Training pipeline: features stage, 3 architectures, augmentation, Optuna tuning, MLflow registry (champion/challenger), ONNX export, model tests | ✅ |
 | 4 | Model serving API: FastAPI + ONNX Runtime container, registry `@champion` with hot reload, Prometheus metrics, remote model client in the detector | ✅ |
-| 5 | Streaming: Kafka + Spark Structured Streaming, dead-letter handling | ⬜ |
+| 5 | Streaming: Kafka + Spark Structured Streaming, validation + dead-letter queue, lake sink, stateful scoring via the serving API, predictions table, alert bridge, edge fallback | ✅ |
 | 6 | Monitoring: Prometheus, Grafana, Alertmanager, drift detection | ⬜ |
 | 7 | Automated retraining with Airflow, feedback labels, champion/challenger | ⬜ |
 | 8 | CD: image publishing, deployment, model rollout | ⬜ |

@@ -21,6 +21,7 @@ optuna==4.1.0            # hyperparameter search (training/tune_fight.py)
 onnx==1.17.0             # model export
 onnxruntime==1.20.1      # runs the exported model (live detection, serving)
 prometheus-client==0.21.1 # metrics of the serving API (Prometheus)
+confluent-kafka==2.6.1   # detector -> Kafka (streaming.enabled), alert bridge
 # database (backend on PostgreSQL / SQLite)
 sqlalchemy>=2.0,<2.1
 psycopg[binary]>=3.2,<3.3

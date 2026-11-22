@@ -1,5 +1,4 @@
 """Small helpers for working with COCO-17 keypoints."""
-import cv2
 import numpy as np
 
 # COCO keypoint indices
@@ -90,4 +89,5 @@ def joint_angle(a, b, c):
 
 
 def point_in_polygon(pt, poly):
+    import cv2  # only the zone check needs OpenCV (the stream workers don't)
     return cv2.pointPolygonTest(poly, (float(pt[0]), float(pt[1])), False) >= 0
