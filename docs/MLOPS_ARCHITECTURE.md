@@ -77,7 +77,7 @@ flowchart LR
 | Data & model versioning | **DVC** pipeline (`dvc.yaml`: ingest → extract_pose → validate → feedback → features → train_fight → drift_reference), remote = MinIO bucket `dvc` | – | ✅ |
 | Model training & tuning | PyTorch models (GRU, TCN, ST-GCN in `rover_ai/nets.py`), k-fold CV, **Optuna** search with pruning (`training/tune_fight.py`), ONNX export checked by ONNX Runtime | – | ✅ |
 | Containerisation | Dockerfile per service (`docker/`), one `docker-compose.yml` with health checks, memory limits and profiles | – | ✅ |
-| CI/CD | **GitHub Actions**: lint + tests (SQLite and PostgreSQL) + compose validation + image builds on every push/PR → publish images → deploy | – | 🟡 CI done; CD in Phase 8 |
+| CI/CD | **GitHub Actions**. CI: lint, tests (SQLite and PostgreSQL), compose and monitoring config validation, image builds, DAG test in the Airflow image, shellcheck, Terraform validate. CD: images to **GitHub Container Registry / Docker Hub** (`sha-<commit>`, `latest`, versions) → deploy to the laptop (self-hosted runner) or **AWS EC2** (SSH) with health checks, smoke tests and automatic rollback; *Model rollout* workflow for promote / rollback ([DEPLOYMENT.md](DEPLOYMENT.md)) | – | ✅ |
 
 \* Airflow's web UI is on host port 8081 because the backend already uses 8080.
 
@@ -130,7 +130,11 @@ All activities are declared in one place (`activities.yaml`, Phase 9): name, typ
 Everything runs in Docker Compose, configured only through environment variables (`.env`, see `.env.example`; any `config.yaml` value can be overridden as `ROVER__<SECTION>__<KEY>`). The same images and compose file run:
 
 - **Locally** (default): one laptop runs the whole stack; GitHub Actions deploys through a self-hosted runner.
-- **On a cloud VM** (e.g. AWS EC2): install Docker, copy `.env`, `docker compose pull && docker compose up -d`. Switching only changes host names in `.env`.
+- **AWS EC2**: Terraform (`deploy/aws`) creates the server (security group, encrypted disk, Elastic IP, Docker via cloud-init); GitHub Actions deploys over SSH.
+
+Both run the same `deploy/deploy.sh <commit>`: pull the commit's images, `docker compose up --wait`, smoke tests (including a real prediction), registry seed, and an automatic rollback to the previous release if anything fails. Switching targets only changes two repository variables ([DEPLOYMENT.md](DEPLOYMENT.md)).
+
+**Model rollout:** a retrained model is `@challenger` → scored in **shadow** by the serving API on live traffic (Grafana shows its agreement with the champion) → `@champion` through the promotion gate or the *Model rollout* workflow → hot reload → one-click rollback. A new server serves the release model baked into the serving image until its registry has a champion.
 
 Compose profiles keep memory use manageable (`core`, `streaming`, `mlops`, `monitoring`), so an 8 GB machine can run the parts it needs and a 16 GB machine runs the full stack.
 
@@ -146,5 +150,5 @@ Compose profiles keep memory use manageable (`core`, `streaming`, `mlops`, `moni
 | 5 | Streaming: Kafka + Spark Structured Streaming, validation + dead-letter queue, lake sink, stateful scoring via the serving API, predictions table, alert bridge, edge fallback | ✅ |
 | 6 | Monitoring: Prometheus, Grafana, Alertmanager, kafka-exporter, metrics in every service, drift monitor (data / prediction / concept drift), drift → retraining requests | ✅ |
 | 7 | Automated retraining with Airflow, feedback labels, champion/challenger | ✅ |
-| 8 | CD: image publishing, deployment, model rollout | ⬜ |
+| 8 | CD: image publishing, deployment, model rollout | ✅ |
 | 9 | Activity plugin framework, final docs and demo | ⬜ |

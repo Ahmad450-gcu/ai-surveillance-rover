@@ -12,7 +12,7 @@ failed=0
 
 check() {                        # name url [tries]
   for _ in $(seq 1 "${3:-20}"); do
-    if curl -fsS -m 5 -o /dev/null "$2"; then echo "  ok    $1"; return 0; fi
+    if curl -fs -m 5 -o /dev/null "$2"; then echo "  ok    $1"; return 0; fi
     sleep 3
   done
   echo "  FAIL  $1 ($2)"; failed=1

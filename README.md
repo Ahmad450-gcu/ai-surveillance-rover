@@ -8,7 +8,7 @@ This is an AI-powered surveillance rover (final-year project). The rover (Arduin
 
 **MLOps pipeline (streaming, data lake, model registry, monitoring, drift detection, automated retraining, CI/CD): [`docs/MLOPS_ARCHITECTURE.md`](docs/MLOPS_ARCHITECTURE.md).**
 
-**Building the full rover: follow [`docs/SETUP_GUIDE.md`](docs/SETUP_GUIDE.md)**, one guide from wiring and environments to testing the physical rover step by step. Training the AI: [`docs/TRAINING.md`](docs/TRAINING.md). Model serving API: [`docs/SERVING.md`](docs/SERVING.md). Streaming pipeline (Kafka + Spark): [`docs/STREAMING.md`](docs/STREAMING.md). Monitoring and drift: [`docs/MONITORING.md`](docs/MONITORING.md). Automated retraining: [`docs/RETRAINING.md`](docs/RETRAINING.md). Testing from 0 to 100: [`docs/TESTING.md`](docs/TESTING.md). Project plan: [`docs/ROADMAP.md`](docs/ROADMAP.md).
+**Building the full rover: follow [`docs/SETUP_GUIDE.md`](docs/SETUP_GUIDE.md)**, one guide from wiring and environments to testing the physical rover step by step. Training the AI: [`docs/TRAINING.md`](docs/TRAINING.md). Model serving API: [`docs/SERVING.md`](docs/SERVING.md). Streaming pipeline (Kafka + Spark): [`docs/STREAMING.md`](docs/STREAMING.md). Monitoring and drift: [`docs/MONITORING.md`](docs/MONITORING.md). Automated retraining: [`docs/RETRAINING.md`](docs/RETRAINING.md). Deployment (CD, AWS EC2) and model rollout: [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md). Testing from 0 to 100: [`docs/TESTING.md`](docs/TESTING.md). Project plan: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## What it detects
 
