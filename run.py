@@ -132,15 +132,19 @@ def rover_info(controller):
 
 
 def make_fight_detector(fcfg):
-    """Trained GRU if available (fight.method: model), otherwise the hand-tuned rules."""
+    """Trained model if available (fight.method: model), otherwise the hand-tuned rules."""
     if fcfg.get("method", "rules") == "model":
-        path = ROOT / fcfg.get("model", "models/fight_gru.pt")
+        path = ROOT / fcfg.get("model", "models/fight_model.onnx")
         if path.exists():
             from rover_ai.learned import LearnedFightDetector
             det = LearnedFightDetector(fcfg, ROOT)
-            print(f"Fight detection: trained model {path.name} (threshold {det.thr:.2f})")
+            reg = det.meta.get("registry", {})
+            ver = f"{reg['model']} v{reg['version']} ({reg['alias']}), " if reg else ""
+            print(f"Fight detection: trained {det.meta['arch'].get('type', 'gru').upper()} {path.name} "
+                  f"({ver}threshold {det.thr:.2f})")
             return det
-        print(f"Fight detection: {path.name} not found, using hand-tuned rules (train it: see docs/TRAINING.md)")
+        print(f"Fight detection: {path.name} not found, using hand-tuned rules "
+              "(deploy the registry champion: python -m mlops.registry pull)")
     return FightDetector(fcfg)
 
 

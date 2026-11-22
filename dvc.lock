@@ -96,3 +96,111 @@ stages:
       hash: md5
       md5: f51c77fde6e771a8de8d45eab2a24da5
       size: 801793
+  features:
+    cmd: python training/features.py --upload
+    deps:
+    - path: data/validated/pose/rwf2000
+      hash: md5
+      md5: 43a7a47950f2bdbb2428044048a7a779.dir
+      size: 30195766
+      nfiles: 2000
+    - path: rover_ai/learned.py
+      hash: md5
+      md5: e105265120a8b25e7a66e20c34c9115a
+      size: 7862
+    - path: training/features.py
+      hash: md5
+      md5: 1c2c12f0dc9c8aa85aae082fa6f17509
+      size: 9376
+    params:
+      params.yaml:
+        features:
+          data: data/validated/pose/rwf2000
+          extra_data: []
+          output: data/processed/fight/rwf2000
+          window: 20
+          stride: 2
+          proximity: 3.5
+    outs:
+    - path: data/processed/fight/rwf2000
+      hash: md5
+      md5: ec1aedcb9a815bc3053d53182ea54ddb.dir
+      size: 575549244
+      nfiles: 3
+  train_fight:
+    cmd: python training/train_fight.py
+    deps:
+    - path: data/processed/fight/rwf2000
+      hash: md5
+      md5: ec1aedcb9a815bc3053d53182ea54ddb.dir
+      size: 575549244
+      nfiles: 3
+    - path: rover_ai/nets.py
+      hash: md5
+      md5: 60d21f1eccd50d9ca3883327c86d2ccc
+      size: 7561
+    - path: training/fightlib.py
+      hash: md5
+      md5: 9a2f9370d1947de877cf779b41f1eaf1
+      size: 8664
+    - path: training/train_fight.py
+      hash: md5
+      md5: a6c9d39c7ddc0f554b0e85c739e4ed2d
+      size: 15912
+    params:
+      params.yaml:
+        fight_model:
+          arch: gru
+          gru:
+            hidden: 64
+            layers: 2
+            dropout: 0.3
+          tcn:
+            channels: 64
+            levels: 3
+            kernel: 3
+            dropout: 0.2
+          stgcn:
+            channels: 32
+            blocks: 3
+            kernel: 5
+            dropout: 0.2
+          lr: 0.001
+          weight_decay: 0.0001
+          batch: 128
+          epochs: 40
+          patience: 8
+          augment:
+            noise: 0.05
+            joint_dropout: 0.0
+            time_stretch: 0.0
+          consecutive_choices:
+          - 2
+          - 3
+          - 4
+          - 5
+          folds: 5
+          seed: 0
+        registry.model_name: fight-detector
+    outs:
+    - path: models/candidate
+      hash: md5
+      md5: b40e211df238ef0b6b3e06c7ab500f91.dir
+      size: 565785
+      nfiles: 3
+    - path: reports/fight_confusion.png
+      hash: md5
+      md5: 3d6b8015a320737a6b695668c1447012
+      size: 60618
+    - path: reports/fight_metrics.json
+      hash: md5
+      md5: 2163b8afd51c666523a805e664598f85
+      size: 2669
+    - path: reports/fight_roc.png
+      hash: md5
+      md5: 2195d7de5617238008bce541b8451fe9
+      size: 53124
+    - path: reports/fight_training.png
+      hash: md5
+      md5: be180b2ecd1f56d998c58e3b25b51032
+      size: 69230

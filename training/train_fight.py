@@ -1,16 +1,22 @@
-"""Stage 2 of the training pipeline: tracked skeletons -> trained fight model + evaluation.
+"""Pipeline stage "train_fight": feature windows -> trained fight model, evaluated, registered in MLflow.
 
-    python training/train_fight.py            # settings come from params.yaml (section "fight_model")
+    python training/train_fight.py                    # settings: params.yaml section "fight_model"
+    python training/train_fight.py --arch stgcn       # quick experiment with another architecture
+    python training/train_fight.py --no-register      # do not create a registry version
 
-Data   : data/validated/pose/rwf2000/train  (RWF-2000 train, 1600 clips) -> 5-fold cross-validation chooses the alert rule
-                                                              (threshold + frames in a row), then the final model
-                                                              is fitted on 90% with 10% dev for early stopping
-         data/validated/pose/rwf2000/val    (RWF-2000 val, 400 clips)    -> final test, used once, never for training or tuning
-Output : models/fight_gru.pt + models/fight_gru.json        (weights + settings/threshold/metrics)
-         reports/fight_metrics.json, reports/*.png         (results, curves, confusion matrices)
+Data   (from the "features" stage, data/processed/fight/rwf2000)
+    RWF-2000 train split (1600 clips) -> 5-fold cross-validation chooses the alert rule (threshold + judgements
+                                         in a row); the final model is fitted on 90% with 10% dev for early stopping
+    RWF-2000 val split   (400 clips)  -> final test, used once, never for training or tuning; scored like live
+Output
+    models/candidate/model.{pt,onnx,json}   weights, ONNX export (checked against PyTorch), settings + metrics
+    reports/fight_metrics.json, reports/*.png
+    MLflow: run in experiment "fight-model" + new version of the registered model, alias "challenger"
+    (python -m mlops.registry promote  then decides whether it replaces the champion)
 """
+import argparse
 import json
-import random
+import subprocess
 import sys
 import time
 from collections import defaultdict
@@ -19,312 +25,228 @@ from pathlib import Path
 import numpy as np
 import torch
 import yaml
-from torch import nn
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from rover_ai.geometry import body_center, body_scale, box_iou  # noqa: E402
-from rover_ai.learned import FPS, MIN_COVER, N_FEAT, PAIR_GAP, FightGRU, flip_boxes, flip_kpts, window_features  # noqa: E402
+from rover_ai.learned import FPS, N_FEAT, PAIR_GAP  # noqa: E402
+from rover_ai.nets import build_model, count_params  # noqa: E402
+from training.features import load_features  # noqa: E402
+from training.fightlib import (  # noqa: E402
+    arch_config,
+    choose_rule,
+    clip_score,
+    metrics,
+    pair_probs,
+    seed_all,
+    train_model,
+    windows_of,
+)
 
-P = yaml.safe_load((ROOT / "params.yaml").read_text())["fight_model"]
-T, STRIDE, PROX = P["window"], P["stride"], P["proximity"]
-NEED_CHOICES = P["consecutive_choices"]        # candidate "judgements in a row" for the alert rule
-
-
-# ----------------------------------------------------------------------------- loading
-def load_clip(path):
-    """npz -> {track_id: (kpts (F,17,3), boxes (F,4), present (F,))}, width"""
-    d = np.load(path)
-    F = int(d["n_frames"])
-    tracks = {}
-    for tid in np.unique(d["track"]):
-        sel = d["track"] == tid
-        fr = d["frame"][sel].astype(int)
-        if len(fr) < 3:
-            continue
-        k = np.zeros((F, 17, 3), np.float32)
-        b = np.zeros((F, 4), np.float32)
-        present = np.zeros(F, bool)
-        k[fr], b[fr], present[fr] = d["kpts"][sel], d["box"][sel], True
-        idx = np.flatnonzero(present)
-        for i0, i1 in zip(idx[:-1], idx[1:]):           # fill gaps by interpolation, like live
-            if i1 - i0 > 1:
-                w = (np.arange(i0 + 1, i1) - i0) / (i1 - i0)
-                k[i0 + 1:i1] = k[i0] * (1 - w)[:, None, None] + k[i1] * w[:, None, None]
-                b[i0 + 1:i1] = b[i0] * (1 - w)[:, None] + b[i1] * w[:, None]
-        first = idx[0]
-        k[:first], b[:first] = k[first], b[first]       # before the track started: repeat its first pose, like live
-        alive = np.zeros(F, bool)
-        alive[first:idx[-1] + 1] = True                 # tracked from first to last sighting
-        tracks[int(tid)] = (k, b, alive, present)
-    return tracks, F, float(d["width"])
+ALL = yaml.safe_load((ROOT / "params.yaml").read_text())
+CANDIDATE = ROOT / "models" / "candidate"
 
 
-def close_pairs(tracks, s, e):
-    """Pairs of people seen in the window's last frame, tracked for at least MIN_COVER of the window,
-    and close to each other (judged at the last frame, like live), closest first."""
-    ids = [i for i, (_, _, alive, pr) in tracks.items()
-           if pr[e - 1] and alive[s:e].mean() >= MIN_COVER and alive[e - 1]]
-    out = []
-    for x in range(len(ids)):
-        for y in range(x + 1, len(ids)):
-            ka, ba = tracks[ids[x]][:2]
-            kb, bb = tracks[ids[y]][:2]
-            m = e - 1                                     # judge closeness at the window's last frame, like live
-            sc = (body_scale(ka[m], ba[m]) + body_scale(kb[m], bb[m])) / 2
-            dist = np.linalg.norm(body_center(ka[m], ba[m]) - body_center(kb[m], bb[m])) / sc
-            if dist < PROX or box_iou(ba[m], bb[m]) > 0.05:
-                out.append((dist, ids[x], ids[y]))
-    return [(a, b) for _, a, b in sorted(out)]
+def cross_validate(P, arch, data, train_ids, labels, log=True, trial=None):
+    """K-fold CV on the train split: every train clip is scored by a model that never saw it.
+    Returns out-of-fold pair probabilities per clip and the dev AUC of each fold."""
+    K = P["folds"]
+    fold = np.arange(len(train_ids)) % K
+    oof, aucs = {}, []
+    t0 = time.time()
+    for k in range(K):
+        rest = train_ids[fold != k]
+        n_dev = len(rest) // 10
+        model, hist, auc = train_model(P, arch, *windows_of(data["train"], rest[n_dev:]),
+                                       *windows_of(data["train"], rest[:n_dev]), log=False)
+        aucs.append(auc)
+        oof.update(pair_probs(model, data["eval"], train_ids[fold == k]))
+        if log:
+            print(f"fold {k + 1}/{K}: {len(hist)} epochs, dev window AUC {auc:.3f} | {time.time() - t0:.0f}s", flush=True)
+        if trial is not None:
+            import optuna
+            trial.report(float(np.mean(aucs)), k)
+            if trial.should_prune():
+                raise optuna.TrialPruned()
+    probs = [oof.get(int(i)) for i in train_ids]
+    return probs, aucs
 
 
-def variants(ka, ba, kb, bb, width):
-    """Feature windows for the 4 augmentations: as is, mirrored, persons swapped, both."""
-    fa, fba, fb, fbb = flip_kpts(ka, width), flip_boxes(ba, width), flip_kpts(kb, width), flip_boxes(bb, width)
-    return np.stack([window_features(ka, ba, kb, bb), window_features(fa, fba, fb, fbb),
-                     window_features(kb, bb, ka, ba), window_features(fb, fbb, fa, fba)])
-
-
-def clip_train_windows(path, label):
-    """Training windows of one clip: (n, 4 augmentations, T, N_FEAT)."""
-    tracks, F, width = load_clip(path)
-    X = []
-    for s in range(0, F - T + 1, STRIDE):
-        pairs = close_pairs(tracks, s, s + T)
-        # fight clip: the closest pair is (almost always) the fighters; normal clip: every close pair is a negative
-        for a, b in (pairs[:1] if label else pairs):
-            ka, ba = tracks[a][:2]
-            kb, bb = tracks[b][:2]
-            X.append(variants(ka[s:s + T], ba[s:s + T], kb[s:s + T], bb[s:s + T], width))
-    return np.array(X, np.float32).reshape(-1, 4, T, N_FEAT)
-
-
-def stack(per_clip, labels, idx):
-    X = np.concatenate([per_clip[i] for i in idx])
-    y = np.concatenate([np.full(len(per_clip[i]), labels[i], np.float32) for i in idx])
-    return X, y
-
-
-def clip_window_inputs(path):
-    """All windows (stride 1, both person orders) of every close pair, for clip-level scoring like live."""
-    tracks, F, _ = load_clip(path)
-    per_pair = defaultdict(list)
-    for s in range(0, F - T + 1):
-        for a, b in close_pairs(tracks, s, s + T):
-            ka, ba = tracks[a][:2]
-            kb, bb = tracks[b][:2]
-            per_pair[(a, b)].append((s, window_features(ka[s:s + T], ba[s:s + T], kb[s:s + T], bb[s:s + T]),
-                                     window_features(kb[s:s + T], bb[s:s + T], ka[s:s + T], ba[s:s + T])))
-    return per_pair
-
-
-def pair_probs(model, per_pair):
-    """Model probability for every judged window of every pair: {pair: (start frames, probabilities)}."""
-    out = {}
-    for key, wins in per_pair.items():
-        x = torch.from_numpy(np.stack([w[1] for w in wins] + [w[2] for w in wins]))
-        with torch.no_grad():
-            p = torch.sigmoid(model(x)).numpy()
-        out[key] = (np.array([w[0] for w in wins]), (p[:len(wins)] + p[len(wins):]) / 2)
-    return out
-
-
-def clip_score(probs, need):
-    """Live rule (rover_ai/learned.py): a pair alerts when its last `need` judgements are all above the threshold;
-    its history survives detection gaps of up to PAIR_GAP seconds.
-    So the clip score = max over pairs and runs of (min probability over `need` judgements in a row)."""
-    best = 0.0
-    for starts, p in probs.values():
-        run = []
-        for s, v in zip(starts, p):
-            if run and s - run[-1][0] > PAIR_GAP * FPS:
-                run = []
-            run.append((s, v))
-            if len(run) >= need:
-                best = max(best, float(min(r[1] for r in run[-need:])))
-    return best
-
-
-# ----------------------------------------------------------------------------- metrics
-def metrics(y, pred, score=None):
-    y, pred = np.asarray(y).astype(bool), np.asarray(pred).astype(bool)
-    tp, tn = int((y & pred).sum()), int((~y & ~pred).sum())
-    fp, fn = int((~y & pred).sum()), int((y & ~pred).sum())
-    prec = tp / (tp + fp) if tp + fp else 0.0
-    rec = tp / (tp + fn) if tp + fn else 0.0
-    m = dict(accuracy=(tp + tn) / len(y), precision=prec, recall=rec,
-             f1=2 * prec * rec / (prec + rec) if prec + rec else 0.0, tp=tp, tn=tn, fp=fp, fn=fn)
-    if score is not None:
-        m["roc_auc"] = roc_auc(y, score)
-    return {k: round(v, 4) if isinstance(v, float) else v for k, v in m.items()}
-
-
-def roc_auc(y, s):
-    y, s = np.asarray(y, bool), np.asarray(s, float)
-    pos, neg = s[y], s[~y]
-    if not len(pos) or not len(neg):
-        return float("nan")
-    return float(((pos[:, None] > neg[None]).sum() + 0.5 * (pos[:, None] == neg[None]).sum()) / (len(pos) * len(neg)))
-
-
-def rules_baseline(clips):
-    """Replay the same skeletons through the original hand-tuned rules (rover_ai/fight.py)."""
+def rules_baseline(paths):
+    """Replay the test skeletons through the original hand-tuned rules (rover_ai/fight.py)."""
     from rover_ai.fight import FightDetector
     from rover_ai.tracks import PeopleState
     from rover_ai.vision import Person
     cfg = yaml.safe_load((ROOT / "config.yaml").read_text())["fight"]
     preds = []
-    for path, _ in clips:
-        d = np.load(path)
+    for path in paths:
+        d = np.load(ROOT / path)
         people, det, fired = PeopleState(), FightDetector(cfg), False
         for f in range(int(d["n_frames"])):
             sel = d["frame"] == f
             persons = [Person(int(i), b, float(c), k) for i, b, c, k in
                        zip(d["track"][sel], d["box"][sel], d["conf"][sel], d["kpts"][sel])]
-            t = f / 10.0
+            t = f / FPS
             people.update(persons, t)
             ev, _ = det.update(people.visible(t), t, defaultdict(set))
             fired = fired or bool(ev)
         preds.append(fired)
-    return preds
+    return np.array(preds)
 
 
-# ----------------------------------------------------------------------------- training
-def train_model(Xf, yf, Xd, yd, log=True):
-    """Fit the GRU on (Xf, yf); keep the epoch with the best dev window AUC (early stopping)."""
-    model = FightGRU(N_FEAT, P["hidden"], P["layers"], P["dropout"])
-    opt = torch.optim.AdamW(model.parameters(), lr=P["lr"], weight_decay=P["weight_decay"])
-    pos_w = torch.tensor((1 - yf.mean()) / max(yf.mean(), 1e-6))
-    loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_w)
-    Xd_t = torch.from_numpy(Xd[:, 0])
-    history, best, best_state, bad = [], -1, None, 0
-    for epoch in range(1, P["epochs"] + 1):
-        model.train()
-        order = np.random.permutation(len(yf))
-        total = 0.0
-        for i in range(0, len(order), P["batch"]):
-            idx = order[i:i + P["batch"]]
-            v = np.random.randint(0, 4, len(idx))             # random augmentation per sample
-            xb = torch.from_numpy(Xf[idx, v])
-            xb = xb + P["noise"] * torch.randn_like(xb)
-            loss = loss_fn(model(xb), torch.from_numpy(yf[idx]))
-            opt.zero_grad(); loss.backward()
-            nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            opt.step()
-            total += float(loss) * len(idx)
-        model.eval()
-        with torch.no_grad():
-            pd = torch.sigmoid(model(Xd_t)).numpy()
-        auc = roc_auc(yd, pd)
-        history.append(dict(epoch=epoch, loss=total / len(yf), dev_auc=auc))
-        if log:
-            print(f"epoch {epoch:2d}  loss {total / len(yf):.4f}  dev window AUC {auc:.4f}", flush=True)
-        if auc > best:
-            best, best_state, bad = auc, {k: v.clone() for k, v in model.state_dict().items()}, 0
-        else:
-            bad += 1
-            if bad >= P["patience"]:
-                break
-    model.load_state_dict(best_state)
-    model.eval()
-    return model, history, best
+def export_onnx(model, path, T):
+    """Export to ONNX (dynamic batch) and check that ONNX Runtime gives the same output as PyTorch."""
+    import onnxruntime as ort
+    dummy = torch.randn(4, T, N_FEAT)
+    torch.onnx.export(model, dummy, str(path), input_names=["window"], output_names=["logit"],
+                      dynamic_axes={"window": {0: "batch"}, "logit": {0: "batch"}}, opset_version=17)
+    x = torch.randn(64, T, N_FEAT)
+    with torch.no_grad():
+        ref = model(x).numpy()
+    got = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"]).run(None, {"window": x.numpy()})[0]
+    diff = float(np.abs(ref - got).max())
+    if diff > 1e-3:
+        raise SystemExit(f"ONNX export differs from PyTorch by {diff}")
+    return diff
 
 
-def choose_rule(probs, y):
-    """Pick (judgements in a row, threshold) with the best accuracy on clips where a close pair was judged.
-    Ties go to more judgements and a higher threshold (fewer false alarms)."""
-    has = np.array([bool(p) for p in probs])
-    grid = np.round(np.arange(0.30, 0.96, 0.01), 2)
-    best = None
-    for need in NEED_CHOICES:
-        scores = np.array([clip_score(p, need) for p in probs])
-        for th in grid:
-            key = (metrics(y[has], scores[has] >= th)["accuracy"], need, th)
-            if best is None or key > best[0]:
-                best = (key, scores)
-    (_, need, th), scores = best
-    return int(need), float(th), scores
+def git_commit():
+    try:
+        return subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
+    except OSError:
+        return ""
+
+
+def data_version():
+    """Which data the model was trained on: dataset checksum + DVC hash of the feature windows."""
+    out = {}
+    manifest = ROOT / "data" / "manifests" / "rwf2000.json"
+    if manifest.exists():
+        out["dataset_sha256"] = json.loads(manifest.read_text())["sha256"]
+    lock = ROOT / "dvc.lock"
+    if lock.exists():
+        stages = yaml.safe_load(lock.read_text()).get("stages", {})
+        for o in stages.get("features", {}).get("outs", []):
+            out["features_md5"] = o.get("md5")
+    return out
 
 
 def main():
-    random.seed(P["seed"]); np.random.seed(P["seed"]); torch.manual_seed(P["seed"])
-    roots = [ROOT / P["data"]] + [ROOT / x for x in P.get("extra_data") or []]
-
-    def listing(split):
-        return sorted((str(p), int(p.parent.name == "Fight")) for r in roots for p in (r / split).glob("*/*.npz"))
-
-    train_all, test = listing("train"), listing("val")
-    random.shuffle(train_all)
-    labels = np.array([l for _, l in train_all])
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--arch", choices=["gru", "tcn", "stgcn"], help="override fight_model.arch")
+    ap.add_argument("--no-register", action="store_true", help="log to MLflow but do not create a registry version")
+    ap.add_argument("--run-name", help="MLflow run name")
+    args = ap.parse_args()
+    P = dict(ALL["fight_model"])
+    if args.arch:
+        P["arch"] = args.arch
+    arch = arch_config(P)
+    seed_all(P["seed"])
     t0 = time.time()
-    per_clip = [clip_train_windows(p, l) for p, l in train_all]
-    print(f"clips: train {len(train_all)}, test {len(test)} | windows {sum(map(len, per_clip))} | {time.time() - t0:.0f}s")
+    data = load_features()
+    index, fcfg = data["index"], data["index"]["settings"]
+    clips = index["clips"]
+    labels = np.array([c["label"] for c in clips])
+    n_train = index["n_train"]
+    train_ids = np.random.default_rng(P["seed"]).permutation(n_train)
+    test_ids = np.arange(n_train, len(clips))
+    print(f"{arch['type']}: {count_params(build_model(arch)):,} parameters | "
+          f"clips train {n_train}, test {len(test_ids)} | windows {len(data['train'][1])} | {time.time() - t0:.0f}s")
 
-    # 1. K-fold cross-validation on the train split: every clip is scored by a model that never saw it
-    K = P["folds"]
-    fold = np.arange(len(train_all)) % K
-    oof = [None] * len(train_all)
-    for k in range(K):
-        rest = np.flatnonzero(fold != k)
-        n_in = len(rest) // 10
-        model, hist, auc = train_model(*stack(per_clip, labels, rest[n_in:]), *stack(per_clip, labels, rest[:n_in]), log=False)
-        for i in np.flatnonzero(fold == k):
-            oof[i] = pair_probs(model, clip_window_inputs(train_all[i][0]))
-        print(f"fold {k + 1}/{K}: {len(hist)} epochs, dev window AUC {auc:.3f} | {time.time() - t0:.0f}s", flush=True)
-    need, thr, cv_scores = choose_rule(oof, labels)
-    cv_has = np.array([bool(p) for p in oof])
-    cv = metrics(labels[cv_has], cv_scores[cv_has] >= thr, cv_scores[cv_has])
-    print(f"alert rule: {need} judgements in a row >= {thr:.2f} | cross-validation (clips with a pair): {cv}")
+    # 1. cross-validation on the train split -> alert rule (judgements in a row + threshold)
+    oof, fold_aucs = cross_validate(P, arch, data, train_ids, labels)
+    need, thr, cv_scores = choose_rule(oof, labels[train_ids], P["consecutive_choices"])
+    has = np.array([p is not None for p in oof])
+    cv = metrics(labels[train_ids][has], cv_scores[has] >= thr, cv_scores[has])
+    print(f"alert rule: {need} judgements in a row >= {thr:.2f} | CV (train clips with a close pair): {cv}")
 
     # 2. final model: 90% fit, 10% dev for early stopping
-    n_dev = max(1, len(train_all) // 10)
-    idx = np.arange(len(train_all))
-    model, history, best = train_model(*stack(per_clip, labels, idx[n_dev:]), *stack(per_clip, labels, idx[:n_dev]))
-    windows = int(sum(len(per_clip[i]) for i in idx[n_dev:]))
-    del per_clip
+    n_dev = n_train // 10
+    model, history, dev_auc = train_model(P, arch, *windows_of(data["train"], train_ids[n_dev:]),
+                                          *windows_of(data["train"], train_ids[:n_dev]))
 
     # 3. final test on RWF-2000 val (never seen during training or rule choice), scored like live
-    inputs = [clip_window_inputs(p) for p, _ in test]
-    test_scores = np.array([clip_score(pair_probs(model, x), need) for x in inputs])
-    has_pair = np.array([len(x) > 0 for x in inputs])      # two people close together were judged at least once
-    test_y = np.array([l for _, l in test])
-    rule_pred = np.array(rules_baseline(test))
+    probs = pair_probs(model, data["eval"], test_ids)
+    test_scores = np.array([clip_score(probs.get(int(i)), need) for i in test_ids])
+    has_pair = np.array([int(i) in probs for i in test_ids])
+    test_y = labels[test_ids]
+    rule_pred = rules_baseline([clips[i]["path"] for i in test_ids])
     learned = metrics(test_y, test_scores >= thr, test_scores)
     rules = metrics(test_y, rule_pred)
-    hp = has_pair
-    learned_pair = metrics(test_y[hp], test_scores[hp] >= thr, test_scores[hp])
-    rules_pair = metrics(test_y[hp], rule_pred[hp])
-    no_pair = int((test_y.astype(bool) & ~has_pair).sum())
-    coverage = dict(test_clips=len(test), with_close_pair=int(hp.sum()),
-                    fight_with_pair=int((test_y.astype(bool) & hp).sum()), nonfight_with_pair=int((~test_y.astype(bool) & hp).sum()))
+    learned_pair = metrics(test_y[has_pair], test_scores[has_pair] >= thr, test_scores[has_pair])
+    rules_pair = metrics(test_y[has_pair], rule_pred[has_pair])
+    fight = test_y.astype(bool)
+    coverage = dict(test_clips=len(test_ids), with_close_pair=int(has_pair.sum()),
+                    fight_with_pair=int((fight & has_pair).sum()), nonfight_with_pair=int((~fight & has_pair).sum()))
     print("TEST learned:", learned)
     print("TEST rules  :", rules)
     print("coverage:", coverage)
     print("TEST (clips with a close pair) learned:", learned_pair)
     print("TEST (clips with a close pair) rules  :", rules_pair)
 
-    out = ROOT / "models" / "fight_gru.pt"
-    torch.save(model.state_dict(), out)
-    meta = dict(arch=dict(n_feat=N_FEAT, hidden=P["hidden"], layers=P["layers"], dropout=P["dropout"]),
-                window=T, fps=FPS, threshold=thr, consecutive=need, pair_gap=PAIR_GAP, proximity=PROX,
-                trained_on="RWF-2000 train split (pose from YOLO11n-pose + ByteTrack)",
-                clips=dict(train=len(train_all), fit=len(train_all) - n_dev, dev=n_dev, test=len(test), folds=K),
-                windows=windows, cv_with_pair=cv, test_learned=learned, test_rules=rules, coverage=coverage,
-                test_learned_with_pair=learned_pair, test_rules_with_pair=rules_pair, created=time.strftime("%Y-%m-%d %H:%M"))
-    out.with_suffix(".json").write_text(json.dumps(meta, indent=2))
+    # 4. candidate model files
+    CANDIDATE.mkdir(parents=True, exist_ok=True)
+    torch.save(model.state_dict(), CANDIDATE / "model.pt")
+    onnx_diff = export_onnx(model, CANDIDATE / "model.onnx", fcfg["window"])
+    minutes = (time.time() - t0) / 60
+    meta = dict(arch=arch, n_params=count_params(model), window=fcfg["window"], fps=FPS, threshold=thr,
+                consecutive=need, pair_gap=PAIR_GAP, proximity=fcfg["proximity"],
+                trained_on="RWF-2000 train split (pose from YOLO11n-pose + ByteTrack)", data_version=data_version(),
+                clips=dict(train=n_train, fit=n_train - n_dev, dev=n_dev, test=len(test_ids), folds=P["folds"]),
+                windows=int(len(windows_of(data["train"], train_ids[n_dev:])[1])), augment=P.get("augment"),
+                cv_with_pair=cv, cv_fold_dev_auc=[round(a, 4) for a in fold_aucs], test_learned=learned,
+                test_rules=rules, coverage=coverage, test_learned_with_pair=learned_pair,
+                test_rules_with_pair=rules_pair, onnx_max_diff=onnx_diff, git_commit=git_commit(),
+                train_minutes=round(minutes, 1), created=time.strftime("%Y-%m-%d %H:%M"))
+    (CANDIDATE / "model.json").write_text(json.dumps(meta, indent=2))
 
     rep = ROOT / "reports"
     rep.mkdir(exist_ok=True)
     (rep / "fight_metrics.json").write_text(json.dumps(
-        dict(threshold=thr, consecutive=need, cv_with_pair=cv, test_learned=learned, test_rules=rules, coverage=coverage,
-             test_learned_with_pair=learned_pair, test_rules_with_pair=rules_pair, dev_window_auc=best,
-             test_fight_clips_without_close_pair=no_pair, history=history), indent=2))
-    plots(rep, history, test_y[hp], test_scores[hp], thr, learned_pair, rules_pair)
-    log_mlflow(meta, history)
-    print(f"saved {out} and reports/ in {(time.time() - t0) / 60:.1f} min")
+        dict(arch=arch["type"], threshold=thr, consecutive=need, cv_with_pair=cv, test_learned=learned,
+             test_rules=rules, coverage=coverage, test_learned_with_pair=learned_pair, test_rules_with_pair=rules_pair,
+             dev_window_auc=dev_auc, test_fight_clips_without_close_pair=int((fight & ~has_pair).sum()),
+             history=history), indent=2))
+    plots(rep, history, test_y[has_pair], test_scores[has_pair], thr, learned_pair, rules_pair, arch["type"].upper())
+    version = log_mlflow(P, meta, history, register=not args.no_register, run_name=args.run_name)
+    print(f"saved {CANDIDATE.relative_to(ROOT)}/ and reports/ in {minutes:.1f} min"
+          + (f" | registry: version {version} = challenger" if version else ""))
 
 
-def plot_training(rep, history, best_epoch=None):
+def log_mlflow(P, meta, history, register=True, run_name=None):
+    """MLflow run (experiment "fight-model"): params, per-epoch curves, CV + test metrics, plots, model files;
+    plus a new registry version with the alias "challenger". Tracking server from MLFLOW_TRACKING_URI (.env),
+    or a local ./mlruns folder."""
+    from mlops import registry
+    mlflow, client = registry.connect()
+    mlflow.set_experiment("fight-model")
+    flat = {"arch": P["arch"], **{f"{P['arch']}.{k}": v for k, v in P[P["arch"]].items()},
+            **{f"augment.{k}": v for k, v in (P.get("augment") or {}).items()},
+            **{k: v for k, v in P.items() if not isinstance(v, dict) and k != "arch"}}
+    tags = {"git_commit": meta["git_commit"], "activity": "fight", "arch": P["arch"], **meta["data_version"]}
+    with mlflow.start_run(run_name=run_name or f"{P['arch']}-{time.strftime('%m%d-%H%M')}", tags=tags):
+        mlflow.log_params(flat)
+        for h in history:
+            mlflow.log_metrics({"loss": h["loss"], "dev_auc": h["dev_auc"]}, step=h["epoch"])
+        m = {f"test_{k}": v for k, v in meta["test_learned"].items()}
+        m.update({f"test_pair_{k}": v for k, v in meta["test_learned_with_pair"].items()})
+        m.update({f"cv_{k}": v for k, v in meta["cv_with_pair"].items()})
+        m.update(threshold=meta["threshold"], consecutive=meta["consecutive"], n_params=meta["n_params"],
+                 cv_dev_auc_mean=float(np.mean(meta["cv_fold_dev_auc"])), train_minutes=meta["train_minutes"],
+                 onnx_max_diff=meta["onnx_max_diff"])
+        mlflow.log_metrics({k: float(v) for k, v in m.items() if isinstance(v, (int, float)) and v == v})
+        mlflow.log_artifacts(str(CANDIDATE), artifact_path=registry.ARTIFACT_DIR)
+        for f in ("fight_metrics.json", "fight_training.png", "fight_roc.png", "fight_confusion.png"):
+            mlflow.log_artifact(str(ROOT / "reports" / f), artifact_path="reports")
+        if not register:
+            return None
+        name = ALL["registry"]["model_name"]
+        return registry.register(mlflow, client, CANDIDATE / "model.onnx", name, tags={
+            "arch": P["arch"], "test_f1": meta["test_learned"]["f1"], "test_roc_auc": meta["test_learned"]["roc_auc"],
+            "threshold": meta["threshold"], "consecutive": meta["consecutive"], **meta["data_version"]})
+
+
+# ----------------------------------------------------------------------------- plots
+def plot_training(rep, history):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -345,7 +267,7 @@ def plot_training(rep, history, best_epoch=None):
     plt.close(fig)
 
 
-def plots(rep, history, y, scores, thr, learned, rules):
+def plots(rep, history, y, scores, thr, learned, rules, name):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -356,16 +278,16 @@ def plots(rep, history, y, scores, thr, learned, rules):
     tpr = [((s >= t) & y).sum() / y.sum() for t in ths]
     fpr = [((s >= t) & ~y).sum() / (~y).sum() for t in ths]
     fig, ax = plt.subplots(figsize=(4, 4))
-    ax.plot(fpr, tpr, color="#2a6fdb", lw=2, label=f"trained GRU (AUC {learned['roc_auc']:.2f})")
+    ax.plot(fpr, tpr, color="#2a6fdb", lw=2, label=f"trained {name} (AUC {learned['roc_auc']:.2f})")
     ax.plot([0, 1], [0, 1], color="#999", lw=1, ls="--")
-    ax.scatter([rules["fp"] / (rules["fp"] + rules["tn"])], [rules["recall"]], color="#e07b00", zorder=3, s=40,
+    ax.scatter([rules["fp"] / max(rules["fp"] + rules["tn"], 1)], [rules["recall"]], color="#e07b00", zorder=3, s=40,
                label="hand-tuned rules")
     ax.set_xlabel("false positive rate"); ax.set_ylabel("true positive rate"); ax.legend(loc="lower right", frameon=False)
     ax.set_title(f"Test clips with a close pair (n = {len(y)})", fontsize=10)
     fig.tight_layout(); fig.savefig(rep / "fight_roc.png", dpi=200); plt.close(fig)
 
     fig, axes = plt.subplots(1, 2, figsize=(7, 3.2))
-    for ax, (name, m) in zip(axes, (("Trained GRU", learned), ("Hand-tuned rules", rules))):
+    for ax, (title, m) in zip(axes, ((f"Trained {name}", learned), ("Hand-tuned rules", rules))):
         cm = np.array([[m["tn"], m["fp"]], [m["fn"], m["tp"]]])
         ax.imshow(cm, cmap="Blues", vmin=0, vmax=cm.sum() / 2)
         for i in range(2):
@@ -373,36 +295,9 @@ def plots(rep, history, y, scores, thr, learned, rules):
                 ax.text(j, i, cm[i, j], ha="center", va="center", fontsize=13,
                         color="white" if cm[i, j] > cm.sum() / 4 else "black")
         ax.set_xticks([0, 1], ["normal", "fight"]); ax.set_yticks([0, 1], ["normal", "fight"])
-        ax.set_xlabel("predicted"); ax.set_ylabel("actual"); ax.set_title(f"{name}\naccuracy {m['accuracy']:.1%}", fontsize=10)
+        ax.set_xlabel("predicted"); ax.set_ylabel("actual"); ax.set_title(f"{title}\naccuracy {m['accuracy']:.1%}", fontsize=10)
     fig.suptitle(f"RWF-2000 test clips where two people were close together (n = {len(y)})", fontsize=10)
     fig.tight_layout(); fig.savefig(rep / "fight_confusion.png", dpi=200); plt.close(fig)
-
-
-def log_mlflow(meta, history):
-    """Log the run to MLflow: the tracking server from MLFLOW_TRACKING_URI (.env, e.g. the Docker stack at
-    http://localhost:5000), or a local ./mlruns folder when it is not set."""
-    try:
-        import mlflow
-    except ImportError:
-        return
-    import os
-    import subprocess
-
-    from rover_ai.settings import load_dotenv
-    load_dotenv()
-    mlflow.set_tracking_uri(os.environ.get("MLFLOW_TRACKING_URI") or (ROOT / "mlruns").as_uri())
-    mlflow.set_experiment("fight-model")
-    try:
-        commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
-    except OSError:
-        commit = ""
-    with mlflow.start_run(tags={"git_commit": commit, "activity": "fight"}):
-        mlflow.log_params(P)
-        for h in history:
-            mlflow.log_metrics({"loss": h["loss"], "dev_auc": h["dev_auc"]}, step=h["epoch"])
-        mlflow.log_metrics({f"test_{k}": v for k, v in meta["test_learned"].items()})
-        mlflow.log_artifact(str(ROOT / "models" / "fight_gru.pt"))
-        mlflow.log_artifact(str(ROOT / "models" / "fight_gru.json"))
 
 
 if __name__ == "__main__":

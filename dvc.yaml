@@ -39,22 +39,36 @@ stages:
       - reports/data_validation.json:
           cache: false
 
-  train_fight:
-    cmd: python training/train_fight.py
+  features:                  # validated clips -> model-ready windows, computed once for every experiment
+    cmd: python training/features.py --upload
     deps:
       - data/validated/pose/rwf2000
-      - training/train_fight.py
+      - training/features.py
       - rover_ai/learned.py
     params:
-      - fight_model
+      - features
     outs:
-      - models/fight_gru.pt
-      - models/fight_gru.json:
-          cache: false
+      - data/processed/fight/rwf2000
+
+  train_fight:               # CV + final fit + test, logged to MLflow, registered as "challenger"
+    cmd: python training/train_fight.py
+    deps:
+      - data/processed/fight/rwf2000
+      - training/train_fight.py
+      - training/fightlib.py
+      - rover_ai/nets.py
+    params:
+      - fight_model
+      - registry.model_name
+    outs:
+      - models/candidate
     metrics:
       - reports/fight_metrics.json:
           cache: false
-    plots:
-      - reports/fight_training.png
-      - reports/fight_roc.png
-      - reports/fight_confusion.png
+    plots:                   # kept in git (used by the docs)
+      - reports/fight_training.png:
+          cache: false
+      - reports/fight_roc.png:
+          cache: false
+      - reports/fight_confusion.png:
+          cache: false

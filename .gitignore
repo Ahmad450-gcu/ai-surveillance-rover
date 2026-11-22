@@ -12,8 +12,8 @@ __pycache__/
 data/*
 !data/manifests/
 models/*.pt
-# our trained model is small and is shipped
-!models/fight_gru.pt
+# trained models live in the MLflow registry (deploy: python -m mlops.registry pull), not in git
+models/fight_model.*
 mlruns/
 .dvc/cache/
 tests/videos/*

@@ -1,13 +1,17 @@
 # Training the fight model (MLOps pipeline)
 
-The fight detector is a **trained model**: a small GRU neural network that reads the skeletons of two nearby people over 2 seconds and outputs the probability that they are fighting. This page explains what it learns from, how to retrain it, and how to add your own rover recordings.
+The fight detector is a **trained model**: a small neural network (GRU, TCN or ST-GCN) that reads the skeletons of two nearby people over 2 seconds and outputs the probability that they are fighting. This page explains what it learns from, how to retrain it, and how to add your own rover recordings.
 
 ## 1. The pipeline
 
 ```
-Hugging Face ──► ingest ──► lake: datasets/ ──► extract_pose ──► lake: raw/ ──► validate ──► lake: validated/ ──► train_fight ──► model
- RWF-2000         SHA-256     (12 GB archive)     YOLO11n-pose +    skeletons      quality gate    (+ rejected/)       GRU, CV,        + metrics
- (12 GB)          verified                        ByteTrack, 10 fps (.npz/clip)    data profile                        test            in MLflow
+Hugging Face ─► ingest ─► lake: datasets/ ─► extract_pose ─► lake: raw/ ─► validate ─► lake: validated/ ─► features ─► lake: processed/
+ RWF-2000        SHA-256    (12 GB archive)    YOLO11n-pose +   skeletons     quality gate  (+ rejected/)       2 s windows   (feature windows)
+                 verified                      ByteTrack 10 fps                                                              │
+       ┌─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+       ▼
+  train_fight ─► MLflow run + registry version @challenger ─► promote (beats @champion?) ─► registry pull ─► models/fight_model.onnx ─► rover
+  CV, test, ONNX        (params, metrics, plots, model)          promotion gate                 deploy
 ```
 
 | Stage | Script | Input | Output | Time (laptop CPU) |
@@ -15,7 +19,10 @@ Hugging Face ──► ingest ──► lake: datasets/ ──► extract_pose �
 | ingest | `training/ingest.py` | Hugging Face URL + SHA-256 in `params.yaml` | `s3://datasets/rwf2000/RWF-2000.tar.gz`, `data/manifests/rwf2000.json` | download time (12 GB) |
 | extract_pose | `training/extract_pose.py` | the archive | `data/raw/pose/rwf2000/<split>/<Fight\|NonFight>/*.npz`, copied to `s3://raw/` | ~2–3 h |
 | validate | `training/validate_data.py` | the raw skeletons | `data/validated/...` (+ `s3://validated/`, `s3://rejected/`), `reports/data_validation.json`, `reports/data_profile.json` | ~1 min |
-| train_fight | `training/train_fight.py` | the validated skeletons + `params.yaml` | model, metrics, plots, MLflow run | ~9 min (incl. 5-fold CV) |
+| features | `training/features.py` | the validated skeletons | `data/processed/fight/rwf2000/` (training windows + per-pair evaluation windows), copied to `s3://processed/` | ~4 min |
+| train_fight | `training/train_fight.py` | the feature windows + `params.yaml` | `models/candidate/model.{pt,onnx,json}`, metrics, plots, MLflow run, registry version `@challenger` | GRU ~10 min, ST-GCN ~1 h |
+| (tuning) | `training/tune_fight.py` | the feature windows | best settings per architecture, `reports/tuning_<arch>.json`, one MLflow run per trial | 1–3 h |
+| (promote) | `python -m mlops.registry promote` | challenger vs champion | `@champion` alias moves only if the challenger is better, `reports/promotion.json` | seconds |
 
 All settings live in `params.yaml`; `dvc.yaml` chains the stages, so `dvc repro` re-runs only what changed. Data and model versions are stored in the data lake with `dvc push` (bucket `dvc`), and each training run is logged to the MLflow server.
 
@@ -37,15 +44,23 @@ Stage 1 turns every clip into the **same skeletons the live system sees** (same 
 - That's **174 numbers per frame**, so one sample is a 20 × 174 table.
 - **Label:** 1 if the clip is from RWF-2000 `Fight`, 0 if from `NonFight`.
 
-**Augmentation** (more variety from the same data): mirror left/right, swap which person is "A", and add small random noise.
+**Augmentation** (more variety from the same data, training only):
+- mirror left/right and swap which person is "A" (precomputed by the features stage);
+- small random noise on every feature;
+- **joint dropout:** whole joints are removed for the 2 s, the way the pose model misses a wrist in a dark or blurry frame;
+- **time stretch:** the window is slowed down (the last 75–100 % replayed over 2 s, velocities scaled down), so the model also sees slower movements.
 
-## 4. The model
+## 4. The models
 
-```
-20 × 174 ──► Linear 174→64 + ReLU ──► GRU (2 layers, 64) ──► [last state, average state] ──► 64 ──► 1 ──► sigmoid = P(fight)
-```
+Three architectures read the same 20 × 174 window and output one probability (`rover_ai/nets.py`). Pick one with `fight_model.arch` in `params.yaml`; live detection, ONNX export and the registry work the same for all of them.
 
-About 69,000 parameters (a few hundred KB). One evaluation takes about 1 ms on the CPU.
+| Architecture | Idea | Parameters |
+|---|---|---|
+| **GRU** (baseline) | Linear 174→64 + ReLU → GRU (2 layers) → [last state, mean state] → 1 | ~69 k |
+| **TCN** | 1-D convolutions over time with dilations 1, 2, 4 (sees the whole 2 s at once, fast on CPU) | ~95 k |
+| **ST-GCN** | Graph convolution over the **34 joints of both people** (Yan et al., 2018): edges follow each skeleton, plus "contact" edges between one person's hands/feet and the other's head/torso, plus learned edges; then convolution over time | ~45 k |
+
+Every trained model is also exported to **ONNX** (checked against PyTorch to 0.001), so it runs with ONNX Runtime, without PyTorch: smaller, faster, and the same file for the laptop, the serving API and a cloud VM.
 
 **Live**, for every close pair of people in every frame: resample their last 2 s of skeletons to 10 fps, run the model in both person orders and average. Then alert when the pair's **last few judgements are all above the threshold** (how many, and the threshold, are chosen in training: see section 5). Detection flickers during fast movement, so a pair keeps this history through gaps of up to 1 s instead of starting again at every missed frame.
 
@@ -95,17 +110,21 @@ Plots: training curves (`reports/fight_training.png`), confusion matrices (`repo
 The Docker stack must be running (`docker compose up -d`), so the lake and MLflow are reachable.
 
 ```bash
-source .venv/bin/activate          # Windows: venv\Scriptsctivate
+source .venv/bin/activate          # Windows: venv\Scripts\activate
 python tools/configure_dvc.py      # once: DVC remote = the lake (bucket "dvc"), keys from .env
 
-dvc repro                          # ingest -> extract_pose -> validate -> train_fight (only what changed)
+dvc repro                          # ingest -> extract_pose -> validate -> features -> train_fight (only what changed)
+python -m mlops.registry promote   # the new @challenger replaces @champion only if it is better
+python -m mlops.registry pull      # deploy the champion: models/fight_model.onnx/.pt/.json
 dvc push                           # store this data/model version in the lake
-dvc metrics show                   # data quality + model metrics
+python -m mlops.registry list      # every version with its test metrics and aliases
 ```
 
-On another machine (e.g. the 16 GB laptop or a cloud VM): `git pull && dvc pull` gives exactly the same data and model versions. Stages can also be run alone, e.g. `dvc repro validate`. Pose extraction is resumable: stop it and run `dvc repro` again to continue.
+On another machine (e.g. the 16 GB laptop or a cloud VM): `git pull && dvc pull` gives exactly the same data and feature versions, and `python -m mlops.registry pull` gives the deployed model. Pose extraction is resumable: stop it and run `dvc repro` again to continue.
 
-To try different settings, edit `params.yaml` (for example `window`, `hidden`, `epochs`) and run step 2 again. The new model replaces `models/fight_gru.pt`. Compare its numbers in `reports/fight_metrics.json` with the old ones before you keep it.
+**Experiments.** `python training/train_fight.py --arch stgcn` trains another architecture (logged and registered like any run). `python training/tune_fight.py --arch gru --trials 30` searches the best settings with Optuna, using cross-validation on the train split only (the test clips are never used for tuning); copy the winner from `reports/tuning_gru.json` into `params.yaml` and run `dvc repro train_fight`. Compare runs side by side in the MLflow UI (http://localhost:5000, experiment `fight-model`).
+
+**Promotion gate** (`params.yaml`, section `registry`): the challenger must beat the champion's test F1 by at least 0.01 without losing more than 0.02 ROC AUC. Rejected versions stay in the registry with the reason as a tag. Rollback: `python -m mlops.registry set-alias champion <old version>` and `pull` again.
 
 ## 8. Adding your own rover clips (makes it better on the rover)
 
@@ -116,9 +135,10 @@ To try different settings, edit `params.yaml` (for example `window`, `hidden`, `
    data/own/val/Fight/fight_09.mp4         data/own/val/NonFight/talk_04.mp4
    ```
    Put about 1 in 5 clips in `val`. Keep clips of the same people/session in the same split.
-3. Extract the skeletons: `python training/extract_pose.py --folder data/own --out data/own/pose`
-4. In `params.yaml`, set `extra_data: [data/own/pose]`.
-5. Retrain: `python training/train_fight.py`.
+3. Extract the skeletons: `python training/extract_pose.py --folder data/own --out data/raw/pose/own`
+4. Check them: `python training/validate_data.py --input data/raw/pose/own --output data/validated/pose/own`
+5. In `params.yaml`, set `features.extra_data: [data/validated/pose/own]`.
+6. Retrain and compare: `dvc repro` then `python -m mlops.registry promote`.
 
 The dashboard's **real / false alarm** labels tell you which alerts to turn into new `Fight` / `NonFight` clips. That's the retraining loop of the MLOps pipeline.
 
@@ -128,8 +148,8 @@ The dashboard's **real / false alarm** labels tell you which alerts to turn into
 ```yaml
 fight:
   method: model              # or: rules  (the old hand-tuned thresholds)
-  model: models/fight_gru.pt
+  model: models/fight_model.onnx   # the registry champion (python -m mlops.registry pull); a .pt file also works
   model_threshold: null      # null = the threshold chosen in training; lower = more sensitive
   model_consecutive: null   # null = the number chosen in training
 ```
-If the model file is missing, the app prints a message and uses the rules.
+If the model file is missing, the app prints a message and uses the rules. At start-up it prints which registry version it runs, e.g. `trained GRU fight_model.onnx (fight-detector v1 (champion), threshold 0.73)`.

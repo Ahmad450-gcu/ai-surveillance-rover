@@ -72,8 +72,9 @@ flowchart LR
 | Monitoring & alerting | **Prometheus**, **Grafana** (dashboards as code), **Alertmanager** | 9090 / 3000 / 9093 | ⬜ Phase 6 |
 | Data drift | Scheduled drift job: **Evidently** reports + Population Stability Index on features and prediction confidence; concept drift from the false-alarm rate of labelled alerts | – | ⬜ Phase 6 |
 | Retraining pipeline | **Apache Airflow** DAG per activity; triggers: weekly, enough new labelled data, or drift | 8080* | ⬜ Phase 7 |
-| Experiment tracking & registry | **MLflow** server (PostgreSQL backend, MinIO artifacts); aliases `@challenger` → `@champion` | 5000 | ✅ server; registry workflow in Phase 3 |
-| Data & model versioning | **DVC** pipeline (`dvc.yaml`: ingest → extract_pose → validate → train), remote = MinIO bucket `dvc` | – | ✅ |
+| Experiment tracking & registry | **MLflow** server (PostgreSQL backend, MinIO artifacts). Registered model `fight-detector` (ONNX); aliases `@challenger` → `@champion` with a promotion gate (`mlops/registry.py`) | 5000 | ✅ |
+| Data & model versioning | **DVC** pipeline (`dvc.yaml`: ingest → extract_pose → validate → features → train_fight), remote = MinIO bucket `dvc` | – | ✅ |
+| Model training & tuning | PyTorch models (GRU, TCN, ST-GCN in `rover_ai/nets.py`), k-fold CV, **Optuna** search with pruning (`training/tune_fight.py`), ONNX export checked by ONNX Runtime | – | ✅ |
 | Containerisation | Dockerfile per service (`docker/`), one `docker-compose.yml` with health checks, memory limits and profiles | – | ✅ |
 | CI/CD | **GitHub Actions**: lint + tests (SQLite and PostgreSQL) + compose validation + image builds on every push/PR → publish images → deploy | – | 🟡 CI done; CD in Phase 8 |
 
@@ -91,13 +92,17 @@ flowchart LR
 Every model is produced by a reproducible DVC pipeline, tracked in MLflow:
 
 ```
-ingest → validate → extract_pose → preprocess → split (train/val/test) → train (k-fold CV, tuning)
-      → evaluate (fixed hold-out test set) → export ONNX → register in MLflow
+ingest → extract_pose → validate → features → train_fight (k-fold CV → alert rule, final fit, hold-out test)
+      → export ONNX (parity check) → MLflow run + registry version @challenger
+      → promote (gate vs @champion) → registry pull → deployed model (models/fight_model.onnx)
+tuning (Optuna, CV on the train split only) feeds the best settings back into params.yaml
 ```
 
-- **Reproducibility:** each registered model is linked to its git commit, its DVC data version and its parameters (`params.yaml`).
-- **Metrics:** accuracy, precision, recall, F1, ROC-AUC and the confusion matrix, plus false alarms per hour on normal footage.
-- **Promotion gate:** a new model becomes `@champion` only if it beats the current champion on the same hold-out set.
+- **Feature store (offline):** the `features` stage turns validated clips into model-ready windows once (`s3://processed/fight/…`), so every experiment, architecture and tuning trial reuses identical inputs.
+- **Reproducibility:** each MLflow run and registry version is tagged with its git commit, the dataset SHA-256 and the DVC hash of the feature windows, and logs all parameters (`params.yaml`).
+- **Metrics:** accuracy, precision, recall, F1, ROC-AUC and confusion matrix on the 400 hold-out clips, scored exactly like live detection, next to the hand-tuned rules on the same clips.
+- **Promotion gate:** a new version becomes `@champion` only if its test F1 beats the champion by ≥ 0.01 without losing more than 0.02 ROC AUC (`params.yaml` → `registry`). The decision is stored as a version tag and in `reports/promotion.json`; rollback is moving the alias back.
+- **Model tests** (`tests/test_models.py`): every architecture's output shape, PyTorch ↔ ONNX equality, augmentation correctness, the live alert rule, metric maths and the promotion gate.
 
 ## 5. Real-time production flow
 
@@ -135,7 +140,7 @@ Compose profiles keep memory use manageable (`core`, `streaming`, `mlops`, `moni
 | 0 | Repo setup: env-based config, lint, tests, CI | ✅ |
 | 1 | Docker foundation: PostgreSQL, MinIO, MLflow; backend on PostgreSQL | ✅ |
 | 2 | Data layer: lake buckets, DVC remote on MinIO, dataset versioning, data validation | ✅ |
-| 3 | Training pipeline: full DVC stages, MLflow registry, ONNX export, model tests | ⬜ |
+| 3 | Training pipeline: features stage, 3 architectures, augmentation, Optuna tuning, MLflow registry (champion/challenger), ONNX export, model tests | ✅ |
 | 4 | Model serving API | ⬜ |
 | 5 | Streaming: Kafka + Spark Structured Streaming, dead-letter handling | ⬜ |
 | 6 | Monitoring: Prometheus, Grafana, Alertmanager, drift detection | ⬜ |

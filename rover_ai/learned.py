@@ -1,4 +1,4 @@
-"""Trained fight model: a small GRU that reads the skeletons of two nearby people over 2 seconds.
+"""Trained fight model: a small network (GRU, TCN or ST-GCN, see nets.py) that reads the skeletons of two nearby people over 2 seconds.
 
 The same feature code is used for training (training/train_fight.py) and live detection, so
 the model sees exactly the same kind of input in both places.
@@ -15,10 +15,10 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from torch import nn
 
 from .events import Event
 from .geometry import KP_CONF, body_center, body_scale, box_iou
+from .nets import FightGRU, build_model  # noqa: F401  (FightGRU: older imports)
 
 FPS = 10.0                      # the model works on 10 frames per second
 FLIP_IDX = [0, 2, 1, 4, 3, 6, 5, 8, 7, 10, 9, 12, 11, 14, 13, 16, 15]   # left <-> right keypoints
@@ -68,23 +68,30 @@ def flip_boxes(b, width):
     return b
 
 
-class FightGRU(nn.Module):
-    def __init__(self, n_feat=N_FEAT, hidden=64, layers=2, dropout=0.3):
-        super().__init__()
-        self.inp = nn.Sequential(nn.Linear(n_feat, hidden), nn.ReLU(), nn.Dropout(dropout))
-        self.gru = nn.GRU(hidden, hidden, num_layers=layers, batch_first=True, dropout=dropout)
-        self.head = nn.Sequential(nn.Linear(2 * hidden, hidden), nn.ReLU(), nn.Dropout(dropout), nn.Linear(hidden, 1))
+class OnnxModel:
+    """An exported model run with ONNX Runtime (no PyTorch needed, e.g. on the Pi or in the serving container).
+    Called like the PyTorch model: tensor (B, T, F) -> logits tensor (B,)."""
 
-    def forward(self, x):                       # x: (B, T, F)
-        h, _ = self.gru(self.inp(x))
-        z = torch.cat([h[:, -1], h.mean(1)], dim=1)   # last state + average over time
-        return self.head(z).squeeze(1)          # logits
+    def __init__(self, path):
+        import onnxruntime as ort
+        self.session = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+        self.input = self.session.get_inputs()[0].name
+
+    def __call__(self, x):
+        x = x.numpy() if hasattr(x, "numpy") else np.asarray(x, np.float32)
+        return torch.from_numpy(self.session.run(None, {self.input: x.astype(np.float32)})[0])
+
+    def eval(self):
+        return self
 
 
 def load_model(path):
+    """models/<name>.pt (PyTorch weights) or models/<name>.onnx, with the settings in models/<name>.json."""
     path = Path(path)
     meta = json.loads(path.with_suffix(".json").read_text())
-    model = FightGRU(**meta["arch"])
+    if path.suffix == ".onnx":
+        return OnnxModel(path), meta
+    model = build_model(meta["arch"])
     model.load_state_dict(torch.load(path, map_location="cpu"))
     model.eval()
     return model, meta
