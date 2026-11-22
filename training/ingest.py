@@ -11,6 +11,7 @@
 """
 import argparse
 import hashlib
+import http.client
 import json
 import sys
 import time
@@ -34,8 +35,22 @@ def sha256_file(path):
     return h.hexdigest()
 
 
-def download(url, dst, expected_size=None):
-    """Resumable HTTP download (Range requests)."""
+def download(url, dst, expected_size=None, attempts=30):
+    """Resumable HTTP download: on a network error it waits and continues from where it stopped."""
+    for attempt in range(1, attempts + 1):
+        try:
+            return _download_once(url, dst, expected_size)
+        except (OSError, http.client.HTTPException) as e:   # timeouts, resets, dropped connections
+            if attempt == attempts:
+                raise
+            wait = min(10 * attempt, 120)
+            have = dst.stat().st_size / 1e9 if dst.exists() else 0
+            print(f"  network error ({type(e).__name__}: {e}) at {have:.2f} GB, retry {attempt}/{attempts - 1} "
+                  f"in {wait}s", flush=True)
+            time.sleep(wait)
+
+
+def _download_once(url, dst, expected_size=None):
     dst.parent.mkdir(parents=True, exist_ok=True)
     have = dst.stat().st_size if dst.exists() else 0
     if expected_size and have == expected_size:
