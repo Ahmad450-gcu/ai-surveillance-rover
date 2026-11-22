@@ -1,0 +1,18 @@
+# Grafana data sources, provisioned at start-up (values from the container's environment, i.e. .env)
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData: {timeInterval: 15s}
+  - name: PostgreSQL
+    uid: postgres
+    type: grafana-postgresql-datasource
+    access: proxy
+    url: postgres:5432
+    user: ${POSTGRES_USER}
+    secureJsonData: {password: "${POSTGRES_PASSWORD}"}
+    jsonData: {database: "${POSTGRES_DB}", sslmode: disable, postgresVersion: 1600}

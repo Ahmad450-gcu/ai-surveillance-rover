@@ -65,6 +65,9 @@ Test IDs **TC-01…TC-14**, **TC-59**, **TC-61** and **TC-62** match Table 4.8 o
 | TC-65 | `python -m mlops.registry set-alias champion 1`, wait ≤ 60 s, `curl http://127.0.0.1:8000/v1/models/fight`; then `set-alias champion <previous>` | The service switches to v1 by itself (rollback without a restart), then back |
 | TC-67 | `docker compose --profile streaming up -d --build`, then `python tools/stream_smoke_test.py` | 4 × **[PASS]**: every kind of invalid record reaches the dead-letter topic with its reason; the fight clip is scored by Spark (predictions in PostgreSQL), raises exactly one FIGHT alert, and the alert appears in the backend |
 | TC-68 | `python run.py --source tests/videos/fight.avi --set loitering.enabled=false --set streaming.enabled=true` | Start-up says "the stream scores fights"; the FIGHT alert (IDs 5 and 9) appears in the dashboard marked `[stream]` |
+| TC-71 | `docker compose --profile streaming --profile monitoring up -d`, open http://localhost:9090/targets | All 8 targets **UP**; Grafana (http://localhost:3000) shows the folder *Rover* with *System health* and *Model & drift* |
+| TC-72 | `python tools/frames.py from-clips data/validated/pose/rwf2000/val data/streams/val100.jsonl.gz`, then `python tools/frames.py replay data/streams/val100.jsonl.gz --speed 0 --camera cam-normal` and the same with `--camera cam-dark --drift dark`; after ~2 min `curl http://127.0.0.1:9200/report` | cam-normal: every feature **stable**; cam-dark: **drift** on `kp_conf` and `visible_joints` only |
+| TC-73 | Wait ~3 more minutes after TC-72 | Alert `DataDriftDetected` (camera cam-dark) **firing** at http://localhost:9093; a row in `retrain_requests` (Grafana → Model & drift → Retraining requests) |
 | TC-15 | `python run.py` (laptop webcam) | You appear with a skeleton; press **Z**, draw a zone, lean into it → alert |
 
 If the test videos are missing: `python tools/get_test_videos.py`.

@@ -117,6 +117,38 @@ def read_frames(spark):
             .withColumn("reason", reason_expr()))
 
 
+# ----------------------------------------------------------------------------------------------- metrics
+class Metrics:
+    """Pipeline metrics of this job, served on METRICS_PORT (9101) for Prometheus. Spark's own streaming metrics
+    (input rate, batch duration, state rows) are on the UI port: /metrics/prometheus/."""
+
+    def __init__(self):
+        from prometheus_client import Counter, Gauge, Histogram
+        self.frames = Counter("rover_stream_frames_total", "Frame records checked", ["result"])
+        self.rejected = Counter("rover_stream_rejected_total", "Frame records sent to the dead-letter queue",
+                                ["reason"])
+        self.judgements = Counter("rover_stream_judgements_total", "Pair judgements by the stream")
+        self.alerts = Counter("rover_stream_alerts_total", "Alerts raised by the stream")
+        self.batch = Histogram("rover_stream_batch_seconds", "Micro-batch sink duration", ["query"],
+                               buckets=(.1, .25, .5, 1, 2, 5, 10, 30))
+        self.last = Gauge("rover_stream_last_batch_timestamp_seconds", "When a micro-batch with data finished",
+                          ["query"])
+        self.lag = Gauge("rover_stream_event_lag_seconds", "Now minus the newest event time of the last batch",
+                         ["query"])
+
+
+METRICS = None
+
+
+def metrics():
+    global METRICS
+    if METRICS is None:
+        from prometheus_client import start_http_server
+        METRICS = Metrics()
+        start_http_server(int(os.environ.get("METRICS_PORT", "9101")))
+    return METRICS
+
+
 # ----------------------------------------------------------------------------------------------- query 1: quality
 def lake():
     from mlops import lake as lk
@@ -130,10 +162,12 @@ def quality_batch(df, batch_id):
     import pyarrow as pa
     import pyarrow.parquet as pq
     from pyspark.sql import functions as F
+    t0 = time.time()
     df = df.persist()
     bad = df.filter(F.col("reason").isNotNull())
     good = df.filter(F.col("reason").isNull())
-    n_bad = bad.count()
+    bad_reasons = {r["reason"]: r["count"] for r in bad.groupBy("reason").count().collect()}
+    n_bad = sum(bad_reasons.values())
     if n_bad:
         dead = bad.select(F.col("f.camera_id").alias("key"), F.to_json(F.struct(
             F.col("reason"), F.col("json").alias("record"), F.col("partition"), F.col("offset"),
@@ -157,6 +191,16 @@ def quality_batch(df, batch_id):
             lake().client().put_object(Bucket="validated", Body=buf.getvalue(),
                                        Key=f"stream/pose/date={day}/camera_id={cam}/batch-{batch_id:08d}.parquet")
     df.unpersist()
+    m = metrics()
+    m.frames.labels("valid").inc(len(pdf))
+    m.frames.labels("invalid").inc(n_bad)
+    for reason, n in bad_reasons.items():
+        m.rejected.labels(reason).inc(n)
+    if len(pdf) or n_bad:
+        m.batch.labels("quality").observe(time.time() - t0)
+        m.last.labels("quality").set(time.time())
+        if len(pdf):
+            m.lag.labels("quality").set(time.time() - float(pdf["ts"].max()))
     log.info("quality batch %d: %d valid -> validated/, %d invalid -> %s", batch_id, len(pdf), n_bad, DLQ_TOPIC)
 
 
@@ -226,6 +270,7 @@ def scores_batch(df, batch_id):
     """Predictions -> PostgreSQL (idempotent), alerts -> Kafka (id = camera/session/frame/pair, deduplicated
     by the bridge)."""
     from pyspark.sql import functions as F
+    t0 = time.time()
     df = df.persist()                    # used twice below: without this the stateful scoring would run twice
     pdf = df.toPandas()
     if not len(pdf):
@@ -241,6 +286,11 @@ def scores_batch(df, batch_id):
              for r in pdf.itertuples()])
     alerts = df.filter(F.col("alert"))
     n_alerts = int(pdf["alert"].sum())
+    m = metrics()
+    m.judgements.inc(len(pdf))
+    m.alerts.inc(n_alerts)
+    m.last.labels("fight-scoring").set(time.time())
+    m.lag.labels("fight-scoring").set(time.time() - float(pdf["ts"].max()))
     if n_alerts:
         (alerts.select(F.col("camera_id").alias("key"), F.to_json(F.struct(
             F.concat_ws("-", "camera_id", "session", "frame", "person_a", "person_b").alias("id"),
@@ -251,6 +301,7 @@ def scores_batch(df, batch_id):
             F.col("camera_id").alias("rover_id"), F.lit("stream").alias("source"))).alias("value"))
          .write.format("kafka").option("kafka.bootstrap.servers", KAFKA).option("topic", ALERTS_TOPIC).save())
     df.unpersist()
+    m.batch.labels("fight-scoring").observe(time.time() - t0)
     log.info("scoring batch %d: %d judgements -> predictions, %d alerts -> %s", batch_id, len(pdf), n_alerts,
              ALERTS_TOPIC)
 
@@ -266,10 +317,18 @@ def main():
     logging.getLogger("py4j").setLevel(logging.WARNING)
     with pg_connect() as conn:
         conn.execute(PREDICTIONS_DDL)
+    metrics()                                    # start the metrics endpoint now, not at the first batch
 
     spark = (SparkSession.builder.appName("rover-stream")
              .config("spark.sql.shuffle.partitions", os.environ.get("SHUFFLE_PARTITIONS", "2"))   # = state partitions
              .config("spark.sql.streaming.stateStore.stateSchemaCheck", "true")
+             # Spark's own metrics for Prometheus: http://spark:4040/metrics/prometheus/ (stable names: namespace)
+             .config("spark.ui.prometheus.enabled", "true")
+             .config("spark.sql.streaming.metricsEnabled", "true")
+             .config("spark.metrics.namespace", "rover")
+             .config("spark.metrics.conf.*.sink.prometheusServlet.class",
+                     "org.apache.spark.metrics.sink.PrometheusServlet")
+             .config("spark.metrics.conf.*.sink.prometheusServlet.path", "/metrics/prometheus")
              .getOrCreate())
     spark.sparkContext.setLogLevel("WARN")
     frames = read_frames(spark)

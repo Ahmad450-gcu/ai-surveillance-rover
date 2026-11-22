@@ -106,8 +106,8 @@ stages:
       nfiles: 2000
     - path: rover_ai/learned.py
       hash: md5
-      md5: 020b86ffb4a560addb619c637c2b7c5c
-      size: 8118
+      md5: 8005c71c9898c42e648c442e187eaa4d
+      size: 16446
     - path: training/features.py
       hash: md5
       md5: 9c1584705d6b0946b83eaa970a05d356
@@ -205,3 +205,30 @@ stages:
       hash: md5
       md5: 1cc670b6c0c1ef9dd9e31bbfb7ffcdb2
       size: 72008
+  drift_reference:
+    cmd: python -m monitoring.reference --upload
+    deps:
+    - path: data/validated/pose/rwf2000
+      hash: md5
+      md5: 43a7a47950f2bdbb2428044048a7a779.dir
+      size: 30195766
+      nfiles: 2000
+    - path: monitoring/drift.py
+      hash: md5
+      md5: 33e7bd57253f5020c7fed6e7f96fb038
+      size: 4279
+    - path: monitoring/reference.py
+      hash: md5
+      md5: fed0898591cb4e1aa6eb0adb686ca4e8
+      size: 3168
+    params:
+      params.yaml:
+        monitoring:
+          data: data/validated/pose/rwf2000
+          max_clips: 800
+          bins: 10
+    outs:
+    - path: reports/drift_reference.json
+      hash: md5
+      md5: 048c9f2f2a0009dab5b98568df7c6c64
+      size: 2033

@@ -18,13 +18,24 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import jwt
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel
 from sqlalchemy import case, func, insert, select, text, update
 from sqlalchemy.exc import IntegrityError
 
 from backend.db import alerts, commands, make_engine, telemetry, users
+from backend.metrics import (
+    ALERTS_IN,
+    ALERTS_LABELLED,
+    HTTP_LATENCY,
+    HTTP_REQUESTS,
+    ROVER_FPS,
+    ROVER_ONLINE,
+    ROVER_PEOPLE,
+    ROVER_STATUS_AGE,
+)
 from rover_ai.settings import load_config
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -108,6 +119,29 @@ def device(x_device_token: str = Header(default="")):
 app = FastAPI(title="AI Surveillance Rover")
 LIVE = {"status": None, "seen": 0.0, "stored": 0.0}
 TELEMETRY_EVERY_S = 10
+
+# ---------------- Prometheus metrics (GET /metrics) ----------------
+@app.middleware("http")
+async def count_requests(request: Request, call_next):
+    t0 = time.perf_counter()
+    response = await call_next(request)
+    route = request.scope.get("route")
+    path = route.path if route is not None else "other"       # the route template, not the raw URL (low cardinality)
+    if path not in ("/metrics", "/health", "/ready"):
+        HTTP_REQUESTS.labels(request.method, path, str(response.status_code)).inc()
+        HTTP_LATENCY.labels(path).observe(time.perf_counter() - t0)
+    return response
+
+
+@app.get("/metrics")
+def metrics():
+    st = LIVE["status"] or {}
+    if LIVE["seen"]:
+        ROVER_STATUS_AGE.set(time.time() - LIVE["seen"])
+        ROVER_FPS.set(st.get("fps") or 0)
+        ROVER_PEOPLE.set(st.get("people") or 0)
+        ROVER_ONLINE.set(1 if (st.get("rover") or {}).get("online") else 0)
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 class Login(BaseModel):
@@ -195,6 +229,7 @@ def label_alert(alert_id: int, body: Label, user=Depends(current_user)):
         raise HTTPException(400, "label must be 'real' or 'false_alarm'")
     if execute(update(alerts).where(alerts.c.id == alert_id).values(label=body.label or None)).rowcount == 0:
         raise HTTPException(404, "No such alert")
+    ALERTS_LABELLED.labels(body.label or "cleared").inc()
     return {"ok": True}
 
 
@@ -230,6 +265,7 @@ def command(body: Command, user=Depends(current_user)):
 def device_alert(body: AlertIn):
     with engine.begin() as conn:
         alert_id = conn.execute(insert(alerts).values(**body.model_dump()).returning(alerts.c.id)).scalar_one()
+    ALERTS_IN.labels(body.type, "stream" if body.message.endswith("[stream]") else "edge").inc()
     return {"id": alert_id}
 
 

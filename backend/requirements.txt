@@ -5,3 +5,4 @@ pyjwt==2.15.1
 pyyaml
 sqlalchemy>=2.0,<2.1
 psycopg[binary]>=3.2,<3.3
+prometheus-client==0.21.1

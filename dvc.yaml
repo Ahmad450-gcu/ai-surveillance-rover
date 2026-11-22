@@ -72,3 +72,15 @@ stages:
           cache: false
       - reports/fight_confusion.png:
           cache: false
+
+  drift_reference:           # what the training data looks like, for data-drift monitoring (monitoring/)
+    cmd: python -m monitoring.reference --upload
+    deps:
+      - data/validated/pose/rwf2000
+      - monitoring/drift.py
+      - monitoring/reference.py
+    params:
+      - monitoring
+    outs:
+      - reports/drift_reference.json:
+          cache: false       # small, kept in git; the monitor reads the lake copy

@@ -6,3 +6,4 @@ pyyaml
 psycopg[binary]==3.2.3
 boto3==1.35.36
 confluent-kafka==2.6.1
+prometheus-client==0.21.1

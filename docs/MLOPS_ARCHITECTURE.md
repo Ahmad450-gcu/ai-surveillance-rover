@@ -69,8 +69,8 @@ flowchart LR
 | Operational store | **PostgreSQL**: alerts, predictions, telemetry, users; metadata for MLflow and Airflow | 5432 | ✅ |
 | Model serving | **FastAPI** inference service (`serving/`), ONNX Runtime, loads `@champion` of each activity from the registry over MLflow's REST API, hot-reloads on promotion/rollback, Prometheus `/metrics` ([SERVING.md](SERVING.md)) | 8000 | ✅ |
 | App backend | FastAPI backend (auth, alerts, clips, rover commands), SQLAlchemy on PostgreSQL, `/health` + `/ready` probes | 8080 | ✅ |
-| Monitoring & alerting | **Prometheus**, **Grafana** (dashboards as code), **Alertmanager** | 9090 / 3000 / 9093 | ⬜ Phase 6 |
-| Data drift | Scheduled drift job: **Evidently** reports + Population Stability Index on features and prediction confidence; concept drift from the false-alarm rate of labelled alerts | – | ⬜ Phase 6 |
+| Monitoring & alerting | **Prometheus** (8 targets, 10 alert rules), **Grafana** (2 dashboards generated as code, Prometheus + PostgreSQL), **Alertmanager** → webhook; kafka-exporter; metrics in serving, backend and the Spark job ([MONITORING.md](MONITORING.md)) | 9090 / 3000 / 9093 | ✅ |
+| Data drift | **drift monitor** (`monitoring/`): per-camera PSI of 5 pose features vs the training reference (DVC stage `drift_reference`), prediction drift (PSI of probabilities vs the previous 7 days), concept drift (false-alarm rate of labelled alerts); drift alerts create **retraining requests** | 9200 | ✅ |
 | Retraining pipeline | **Apache Airflow** DAG per activity; triggers: weekly, enough new labelled data, or drift | 8080* | ⬜ Phase 7 |
 | Experiment tracking & registry | **MLflow** server (PostgreSQL backend, MinIO artifacts). Registered model `fight-detector` (ONNX); aliases `@challenger` → `@champion` with a promotion gate (`mlops/registry.py`) | 5000 | ✅ |
 | Data & model versioning | **DVC** pipeline (`dvc.yaml`: ingest → extract_pose → validate → features → train_fight), remote = MinIO bucket `dvc` | – | ✅ |
@@ -143,7 +143,7 @@ Compose profiles keep memory use manageable (`core`, `streaming`, `mlops`, `moni
 | 3 | Training pipeline: features stage, 3 architectures, augmentation, Optuna tuning, MLflow registry (champion/challenger), ONNX export, model tests | ✅ |
 | 4 | Model serving API: FastAPI + ONNX Runtime container, registry `@champion` with hot reload, Prometheus metrics, remote model client in the detector | ✅ |
 | 5 | Streaming: Kafka + Spark Structured Streaming, validation + dead-letter queue, lake sink, stateful scoring via the serving API, predictions table, alert bridge, edge fallback | ✅ |
-| 6 | Monitoring: Prometheus, Grafana, Alertmanager, drift detection | ⬜ |
+| 6 | Monitoring: Prometheus, Grafana, Alertmanager, kafka-exporter, metrics in every service, drift monitor (data / prediction / concept drift), drift → retraining requests | ✅ |
 | 7 | Automated retraining with Airflow, feedback labels, champion/challenger | ⬜ |
 | 8 | CD: image publishing, deployment, model rollout | ⬜ |
 | 9 | Activity plugin framework, final docs and demo | ⬜ |

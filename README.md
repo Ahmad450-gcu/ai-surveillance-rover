@@ -8,7 +8,7 @@ This is an AI-powered surveillance rover (final-year project). The rover (Arduin
 
 **MLOps pipeline (streaming, data lake, model registry, monitoring, drift detection, automated retraining, CI/CD): [`docs/MLOPS_ARCHITECTURE.md`](docs/MLOPS_ARCHITECTURE.md).**
 
-**Building the full rover: follow [`docs/SETUP_GUIDE.md`](docs/SETUP_GUIDE.md)**, one guide from wiring and environments to testing the physical rover step by step. Training the AI: [`docs/TRAINING.md`](docs/TRAINING.md). Model serving API: [`docs/SERVING.md`](docs/SERVING.md). Streaming pipeline (Kafka + Spark): [`docs/STREAMING.md`](docs/STREAMING.md). Testing from 0 to 100: [`docs/TESTING.md`](docs/TESTING.md). Project plan: [`docs/ROADMAP.md`](docs/ROADMAP.md).
+**Building the full rover: follow [`docs/SETUP_GUIDE.md`](docs/SETUP_GUIDE.md)**, one guide from wiring and environments to testing the physical rover step by step. Training the AI: [`docs/TRAINING.md`](docs/TRAINING.md). Model serving API: [`docs/SERVING.md`](docs/SERVING.md). Streaming pipeline (Kafka + Spark): [`docs/STREAMING.md`](docs/STREAMING.md). Monitoring and drift: [`docs/MONITORING.md`](docs/MONITORING.md). Testing from 0 to 100: [`docs/TESTING.md`](docs/TESTING.md). Project plan: [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## What it detects
 
@@ -66,6 +66,8 @@ docker compose exec backend python -m backend.manage create-user admin
 | PostgreSQL | localhost:5432 | operational database |
 
 With `docker compose --profile streaming up -d --build` it also starts **Kafka, Spark Structured Streaming** (UI http://localhost:4040) and the alert bridge; `python run.py --set streaming.enabled=true` then sends every frame's skeletons through Kafka and Spark ([`docs/STREAMING.md`](docs/STREAMING.md)).
+
+Add `--profile monitoring` for **Prometheus** (http://localhost:9090), **Grafana** (http://localhost:3000, user `admin`, password `GRAFANA_ADMIN_PASSWORD` from `.env`), **Alertmanager** (http://localhost:9093) and the **drift monitor** (http://127.0.0.1:9200/report) ([`docs/MONITORING.md`](docs/MONITORING.md)).
 
 Stop with `docker compose down` (data is kept in Docker volumes; `docker compose down -v` deletes it). With the stack running, set `ROVER__BACKEND__URL=http://localhost:8080` in `.env` so `run.py` sends its alerts there, and training runs log to MLflow automatically (`MLFLOW_TRACKING_URI`). The Pi agent must be started with the same token as `ROVER__ROVER__TOKEN` in `.env`.
 
@@ -243,6 +245,10 @@ streaming/
   spark_job.py           Spark Structured Streaming: validation, dead-letter queue, lake sink, fight scoring
   scoring.py             stateful stream scoring (same tracks + fight detector as the edge)
   bridge.py              Kafka alerts -> backend
+monitoring/
+  drift.py               drift features (keypoint confidence, body size, ...) and PSI
+  reference.py           DVC stage drift_reference: feature distributions of the training data
+  monitor.py             drift monitor service: data / prediction / concept drift, Alertmanager webhook
 tests/
   images/                sample images
   videos/                test videos (downloaded by tools/get_test_videos.py)
@@ -253,6 +259,7 @@ tests/
   test_patrol.py         patrol behaviour test (obstacle vs. scene, watch limit, alert hold)
   test_models.py         fight model architectures, ONNX export, augmentation, promotion gate
   test_serving.py        model serving API: predictions, input checks, hot reload, remote client
+  test_monitoring.py     PSI, drift features, per-camera drift, retraining requests
   test_streaming.py      stream scoring = edge scoring (micro-batches, state, cooldowns), alert bridge
   data/                  recorded skeleton frames of fight.avi (stream test fixture)
 tools/

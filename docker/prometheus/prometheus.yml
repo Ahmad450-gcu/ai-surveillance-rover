@@ -1,0 +1,38 @@
+# Prometheus: scrapes every service of the stack; alert rules in rules.yml go to Alertmanager.
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/rules.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs: [{targets: ["localhost:9090"]}]
+
+  - job_name: serving                 # model serving API: requests, latency, probabilities, model version
+    static_configs: [{targets: ["serving:8000"]}]
+
+  - job_name: backend                 # alerts by source, labels, detector FPS / people, HTTP requests
+    static_configs: [{targets: ["backend:8080"]}]
+
+  - job_name: stream-pipeline         # Spark job: frames valid/invalid by reason, judgements, alerts, lag
+    static_configs: [{targets: ["spark:9101"]}]
+
+  - job_name: spark                   # Spark's own metrics: streaming input/processing rate, batch duration, state
+    metrics_path: /metrics/prometheus/
+    static_configs: [{targets: ["spark:4040"]}]
+
+  - job_name: kafka                   # topics' message offsets, consumer group lag
+    static_configs: [{targets: ["kafka-exporter:9308"]}]
+
+  - job_name: drift-monitor           # data / prediction / concept drift
+    static_configs: [{targets: ["drift-monitor:9200"]}]
+
+  - job_name: alertmanager
+    static_configs: [{targets: ["alertmanager:9093"]}]

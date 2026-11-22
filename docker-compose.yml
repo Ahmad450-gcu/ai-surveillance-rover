@@ -5,7 +5,8 @@
 #   docker compose ps               # all services should become "healthy"
 #
 # Later phases add services behind profiles so a small machine runs only what it needs:
-#   --profile streaming   Kafka, Spark, alert bridge   --profile monitoring  Prometheus, Grafana, Alertmanager
+#   --profile streaming   Kafka, Spark, alert bridge
+#   --profile monitoring  Prometheus, Alertmanager, Grafana, Kafka exporter, drift monitor
 #   --profile mlops       Airflow
 #
 # Every setting comes from .env, so the same file runs on a laptop or a cloud VM (e.g. AWS EC2).
@@ -219,6 +220,7 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
       MAX_LAG_SECONDS: ${STREAM_MAX_LAG_SECONDS:-300}
+      METRICS_PORT: 9101
     volumes:
       - sparkcheckpoints:/checkpoints          # Kafka offsets + scoring state: a restart continues where it stopped
     ports:
@@ -248,9 +250,119 @@ services:
       DEVICE_TOKEN: ${ROVER__BACKEND__DEVICE_TOKEN}
     mem_limit: 128m
 
+  # ================= monitoring profile:  docker compose --profile streaming --profile monitoring up -d =================
+  # ---------------- Prometheus: metrics of every service + alert rules ----------------
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    profiles: ["monitoring"]
+    <<: *restart
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=15d
+      - --storage.tsdb.retention.size=1GB
+      - --web.enable-lifecycle                  # POST /-/reload after editing the rules
+    volumes:
+      - ./docker/prometheus:/etc/prometheus:ro
+      - prometheusdata:/prometheus
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9090/-/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    mem_limit: 256m
+
+  # ---------------- Alertmanager: routes alerts (to the drift monitor's webhook) ----------------
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    profiles: ["monitoring"]
+    <<: *restart
+    command: ["--config.file=/etc/alertmanager/alertmanager.yml", "--storage.path=/alertmanager"]
+    volumes:
+      - ./docker/alertmanager:/etc/alertmanager:ro
+    ports:
+      - "${ALERTMANAGER_PORT:-9093}:9093"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9093/-/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    mem_limit: 64m
+
+  # ---------------- Grafana: dashboards as code (docker/grafana) ----------------
+  grafana:
+    image: grafana/grafana:11.3.1
+    profiles: ["monitoring"]
+    <<: *restart
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/rover-model.json
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-rover}
+    volumes:
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafanadata:/var/lib/grafana
+    ports:
+      - "${GRAFANA_PORT:-3000}:3000"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    mem_limit: 256m
+
+  # ---------------- Kafka metrics (topic offsets, consumer lag) for Prometheus ----------------
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:v1.8.0
+    profiles: ["monitoring"]
+    <<: *restart
+    command: ["--kafka.server=kafka:9092"]
+    mem_limit: 64m
+
+  # ---------------- drift monitor: data / prediction / concept drift + Alertmanager webhook ----------------
+  drift-monitor:
+    image: ${IMAGE_PREFIX:-rover}/spark:${IMAGE_TAG:-latest}
+    profiles: ["monitoring"]
+    <<: *restart
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    command: ["python3", "-m", "monitoring.monitor"]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-rover}
+      LAKE_ENDPOINT_URL: http://minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      DRIFT_EVERY_SECONDS: ${DRIFT_EVERY_SECONDS:-120}
+      DRIFT_WINDOW_MINUTES: ${DRIFT_WINDOW_MINUTES:-30}
+      DRIFT_MIN_SAMPLES: ${DRIFT_MIN_SAMPLES:-200}
+      DRIFT_MIN_FRAMES: ${DRIFT_MIN_FRAMES:-1000}
+    ports:
+      - "${DRIFT_MONITOR_PORT:-9200}:9200"     # /report, /metrics
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9200/health')"]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+    mem_limit: 384m
+
 volumes:
   pgdata:
   miniodata:
   servingcache:
   kafkadata:
   sparkcheckpoints:
+  prometheusdata:
+  grafanadata:

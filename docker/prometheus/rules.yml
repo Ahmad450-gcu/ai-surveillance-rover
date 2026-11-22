@@ -1,0 +1,82 @@
+# Alert rules. Labels:
+#   severity  critical | warning
+#   action    retrain -> the drift monitor's webhook creates a retraining request (Phase 7: Airflow retrains)
+groups:
+  - name: services
+    rules:
+      - alert: ServiceDown
+        expr: up == 0
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ $labels.job }} is down"
+          description: "Prometheus can't scrape {{ $labels.job }} ({{ $labels.instance }}) for 1 minute."
+
+  - name: serving
+    rules:
+      - alert: ServingSlow
+        expr: histogram_quantile(0.95, sum by (le) (rate(serving_request_seconds_bucket[5m]))) > 0.1
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "Model serving p95 latency {{ $value | humanizeDuration }} (> 100 ms)"
+      - alert: ServingErrors
+        expr: >
+          sum(rate(serving_requests_total{status=~"5.."}[5m])) / clamp_min(sum(rate(serving_requests_total[5m])), 1e-9)
+          > 0.05
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ $value | humanizePercentage }} of model requests fail"
+
+  - name: stream
+    rules:
+      - alert: StreamDataQuality
+        expr: >
+          sum(rate(rover_stream_frames_total{result="invalid"}[5m]))
+          / clamp_min(sum(rate(rover_stream_frames_total[5m])), 1e-9) > 0.05
+        for: 2m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $value | humanizePercentage }} of frame records rejected (dead-letter queue)"
+          description: "See rover.pose-frames.dlq or s3://rejected/stream/pose for the reasons."
+      - alert: StreamLagging
+        expr: rover_stream_event_lag_seconds{query="fight-scoring"} > 30 and (time() - rover_stream_last_batch_timestamp_seconds{query="fight-scoring"}) < 60
+        for: 2m
+        labels: {severity: warning}
+        annotations:
+          summary: "Fight scoring is {{ $value | humanizeDuration }} behind the cameras"
+      - alert: AlertBridgeBacklog
+        expr: sum(kafka_consumergroup_lag_sum{consumergroup="alert-bridge"}) > 0
+        for: 5m
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ $value }} stream alerts not delivered to the backend for 5 minutes"
+
+  - name: model
+    rules:
+      - alert: DataDriftDetected
+        expr: rover_drift_detected == 1
+        for: 2m
+        labels: {severity: warning, action: retrain}
+        annotations:
+          summary: "Data drift on camera {{ $labels.camera }}"
+          description: "A feature's PSI vs the training data is above 0.2. GET http://drift-monitor:9200/report shows which."
+      - alert: PredictionDrift
+        expr: rover_prediction_psi > 0.2
+        for: 10m
+        labels: {severity: warning, action: retrain}
+        annotations:
+          summary: "Fight probabilities shifted (PSI {{ $value | printf \"%.2f\" }} vs the previous 7 days)"
+      - alert: FalseAlarmRateHigh
+        expr: rover_false_alarm_rate > 0.5 and on() (sum(rover_alerts_labelled) >= 10)
+        for: 10m
+        labels: {severity: warning, action: retrain}
+        annotations:
+          summary: "{{ $value | humanizePercentage }} of labelled alerts were false alarms (concept drift)"
+      - alert: DriftCheckStale
+        expr: time() - rover_drift_last_run_timestamp_seconds > 900
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "The drift check hasn't run for {{ $value | humanizeDuration }}"

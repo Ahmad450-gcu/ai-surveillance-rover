@@ -1,0 +1,21 @@
+# Alertmanager: groups and routes the alerts from Prometheus (docker/prometheus/rules.yml).
+# Every alert goes to the drift monitor's webhook, which stores it (table ops_events); alerts labelled
+# action=retrain also create a retraining request (table retrain_requests) for the retraining pipeline.
+# To also get e-mail or Slack, add a receiver below (e.g. email_configs / slack_configs) and a route to it.
+route:
+  receiver: ops-webhook
+  group_by: [alertname, camera]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+
+receivers:
+  - name: ops-webhook
+    webhook_configs:
+      - url: http://drift-monitor:9200/alertmanager
+        send_resolved: true
+
+inhibit_rules:
+  - source_matchers: [alertname = ServiceDown]      # a dead service explains its other alerts
+    target_matchers: [severity = warning]
+    equal: [job]

@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1
-# Spark Structured Streaming job (streaming/spark_job.py) and the alert bridge (streaming/bridge.py).
+# Spark Structured Streaming job (streaming/spark_job.py), the alert bridge (streaming/bridge.py) and the drift
+# monitor (monitoring/monitor.py): one image for the Python data services.
 # Spark runs in local mode (one container, 2 cores): enough for a few cameras, and the same job runs unchanged on a
 # Spark cluster (spark-submit --master spark://... or k8s://...).
 FROM apache/spark:3.5.3-scala2.12-java17-python3-ubuntu
@@ -26,10 +27,12 @@ RUN pip3 install -r streaming/requirements.txt
 COPY rover_ai/ rover_ai/
 COPY mlops/__init__.py mlops/lake.py mlops/
 COPY streaming/ streaming/
+COPY monitoring/ monitoring/
 RUN mkdir -p /checkpoints /home/spark && chown -R spark /checkpoints /app /home/spark
 USER spark
 ENV HOME=/home/spark
 
-EXPOSE 4040
+# 4040 Spark UI + Spark metrics, 9101 pipeline metrics, 9200 drift monitor (same image, other command)
+EXPOSE 4040 9101 9200
 CMD ["/opt/spark/bin/spark-submit", "--master", "local[2]", "--driver-memory", "768m", \
      "--conf", "spark.ui.port=4040", "/app/streaming/spark_job.py"]

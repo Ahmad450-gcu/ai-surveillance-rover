@@ -56,3 +56,9 @@ registry:
   metric: f1                 # main test metric (all 400 test clips, scored like live)
   min_improvement: 0.01      # the challenger must beat the champion by at least this much...
   max_auc_drop: 0.02         # ...without losing more than this much ROC AUC
+
+# Data-drift monitoring (monitoring/): reference = what the training data looks like (stage drift_reference)
+monitoring:
+  data: data/validated/pose/rwf2000   # its train split is the reference
+  max_clips: 800                      # sample of training clips (enough for stable deciles, ~1 min)
+  bins: 10                            # PSI bins = deciles of the reference

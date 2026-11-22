@@ -50,14 +50,18 @@ def _masked_mean(pts, vis):
         return (pts * vis[..., None]).sum(1) / vis.sum(1)[:, None]
 
 
-def _person_frames(kpts, boxes):
-    """Per-frame body centre (T,2) and one body width for the whole window: the same rules as
-    geometry.body_center / body_scale, computed for all frames at once (about 10x faster)."""
+def body_centers(kpts, boxes):
+    """geometry.body_center for many poses at once: kpts (N,17,3), boxes (N,4) -> (N,2)."""
+    k, b = np.asarray(kpts), np.asarray(boxes)
+    torso = k[:, TORSO, 2] > KP_CONF
+    box_c = np.stack([(b[:, 0] + b[:, 2]) / 2, (b[:, 1] + b[:, 3]) / 2], axis=1)
+    return np.where(torso.any(1)[:, None], _masked_mean(k[:, TORSO, :2], torso), box_c)
+
+
+def body_scales(kpts, boxes):
+    """geometry.body_scale (body width in pixels) for many poses at once: kpts (N,17,3), boxes (N,4) -> (N,)."""
     k, b = np.asarray(kpts), np.asarray(boxes)
     vis = k[:, :, 2] > KP_CONF
-    torso = vis[:, TORSO]
-    box_c = np.stack([(b[:, 0] + b[:, 2]) / 2, (b[:, 1] + b[:, 3]) / 2], axis=1)
-    centers = np.where(torso.any(1)[:, None], _masked_mean(k[:, TORSO, :2], torso), box_c)
     both = vis[:, 5] & vis[:, 6]
     width = np.where(both, np.linalg.norm(k[:, 5, :2] - k[:, 6, :2], axis=1), -np.inf)
     sh, hp = vis[:, _SH], vis[:, _HP]
@@ -65,8 +69,12 @@ def _person_frames(kpts, boxes):
                      0.75 * np.linalg.norm(_masked_mean(k[:, _SH, :2], sh) - _masked_mean(k[:, _HP, :2], hp), axis=1),
                      -np.inf)
     best = np.maximum(width, trunk)
-    scales = np.where(np.isfinite(best), np.maximum(best, 1.0), np.maximum((b[:, 3] - b[:, 1]) / 4, 1.0))
-    return centers, float(np.median(scales))
+    return np.where(np.isfinite(best), np.maximum(best, 1.0), np.maximum((b[:, 3] - b[:, 1]) / 4, 1.0))
+
+
+def _person_frames(kpts, boxes):
+    """Per-frame body centre (T,2) and one body width for the whole window (median over the frames)."""
+    return body_centers(kpts, boxes), float(np.median(body_scales(kpts, boxes)))
 
 
 def window_features(ka, ba, kb, bb):

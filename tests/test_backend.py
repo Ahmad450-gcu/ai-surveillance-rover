@@ -74,3 +74,21 @@ def test_status_reports_detector_online(client):
     client.post("/api/device/status", json={"mode": "patrol", "fps": 11}, headers=DEVICE)
     s = client.get("/api/status", headers=auth).json()
     assert s["detector_online"] is True and s["mode"] == "patrol"
+
+
+def test_metrics_count_alerts_by_source_and_labels(client):
+    def value(text, name):
+        line = [ln for ln in text.splitlines() if ln.startswith(name)]
+        return float(line[0].split()[-1]) if line else 0.0
+    before = client.get("/metrics").text
+    alert = {"time": "2026-11-22T10:00:00", "type": "fight", "message": "FIGHT: ID 3 and ID 9 [stream]"}
+    alert_id = client.post("/api/device/alerts", json=alert, headers=DEVICE).json()["id"]
+    client.patch(f"/api/alerts/{alert_id}", json={"label": "false_alarm"}, headers=login(client))
+    client.post("/api/device/status", json={"fps": 9.5, "people": 2}, headers=DEVICE)
+    after = client.get("/metrics").text
+    stream = 'rover_alerts_received_total{source="stream",type="fight"}'
+    assert value(after, stream) - value(before, stream) == 1
+    label = 'rover_alert_labels_total{label="false_alarm"}'
+    assert value(after, label) - value(before, label) == 1
+    assert value(after, "rover_detector_fps") == 9.5
+    assert 'rover_backend_requests_total{method="POST",route="/api/device/alerts",status="200"}' in after
