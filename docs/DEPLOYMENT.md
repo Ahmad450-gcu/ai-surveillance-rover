@@ -154,7 +154,10 @@ number of alerts, yet they disagree on one window in five. A promotion that look
   after Docker reported it healthy. The smoke tests now wait up to about 6 minutes per service. A plain restart
   answers within 6 s, so this is memory pressure, not the deployment.
 
-FINAL_DEPLOY_PLACEHOLDER
+**After these fixes**, the commit that contains them (`259dfd3`) went through CI and CD and was deployed the way the
+CD job does it (fetch, checkout, `deploy/deploy.sh 259dfd3`), replacing `fa5acec`: pull 3 min 44 s, `up --wait`
+56 s (backend, MLflow and serving recreated; PostgreSQL and MinIO untouched), every smoke test `ok` on the first
+try, prediction by registry v4: **deployed in 4 min 46 s**.
 
 ## 7. Tests
 
