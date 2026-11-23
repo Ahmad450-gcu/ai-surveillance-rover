@@ -119,3 +119,9 @@ def test_stream_alert_evidence_is_stored(client):
     rows = client.get("/api/alerts", headers=login(client)).json()
     rows = rows if isinstance(rows, list) else rows.get("alerts", rows)
     assert any(r.get("evidence") == "stream://rover-1/abc123/87" for r in rows)
+
+
+def test_activities_come_from_the_registry(client):
+    acts = client.get("/api/activities").json()
+    assert [a["name"] for a in acts] == ["loitering", "access", "fight", "theft", "crowding"]
+    assert {a["alert_type"]: a["kind"] for a in acts}["fight"] == "model"

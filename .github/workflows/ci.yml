@@ -30,6 +30,8 @@ jobs:
           pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements-dev.txt
       - name: Lint
         run: ruff check .
+      - name: Activity registry is fully wired (plugins, config, DVC stages, Grafana rows)
+        run: python -m rover_ai.activities check
       - name: Tests (SQLite)
         run: pytest
       - name: Backend tests (PostgreSQL)
@@ -51,6 +53,7 @@ jobs:
           docker run --rm -v "$PWD/docker/alertmanager:/etc/alertmanager:ro" --entrypoint amtool             prom/alertmanager:v0.27.0 check-config /etc/alertmanager/alertmanager.yml
       - name: Grafana dashboards are generated from build_dashboards.py
         run: |
+          python3 -c "import yaml" 2>/dev/null || sudo apt-get install -y --no-install-recommends python3-yaml
           python3 docker/grafana/build_dashboards.py
           git diff --exit-code docker/grafana/dashboards
       - name: Build images

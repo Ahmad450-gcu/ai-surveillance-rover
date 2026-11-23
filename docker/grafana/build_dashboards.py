@@ -5,7 +5,12 @@
 Panels are declared below in a few lines each; Grafana loads the generated JSON at start-up (provisioning).
 """
 import json
+import sys
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
+from rover_ai import activities  # noqa: E402  (one row of panels per registered activity)
 
 OUT = Path(__file__).parent / "dashboards"
 PROM = {"type": "prometheus", "uid": "prometheus"}
@@ -159,6 +164,34 @@ def system():
                      "Services, model serving, Kafka + Spark pipeline, backend.")
 
 
+# ----------------------------------------------------------------------------------------------- activities
+def activity_rows(L):
+    """One row per activity in activities.yaml: alert volume, human feedback, and (model activities) the served
+    model. A new activity gets its panels by re-running this script."""
+    for a in activities.load().values():
+        t = a.alert_type
+        L.row(f"Activity: {a.title}")
+        L.add(stat("Alerts (24 h)", [(f'sum(increase(rover_alerts_received_total{{type="{t}"}}[24h])) or vector(0)', "")],
+                   desc=f"{a.title} alerts stored by the backend ({a.kind}: {a.description})."), 4, 5)
+        L.add(sql_table("Feedback (7 d)",
+                        f"SELECT count(*) AS alerts, count(*) FILTER (WHERE label = 'real') AS real, "
+                        f"count(*) FILTER (WHERE label = 'false_alarm') AS false_alarm, "
+                        f"count(*) FILTER (WHERE label IS NULL) AS not_reviewed FROM alerts "
+                        f"WHERE type = '{t}' AND received > now() - interval '7 days'",
+                        desc="Human labels from the dashboard; for a model activity they become training data."), 8, 5)
+        if a.is_model:
+            L.add(stat("Model in production", [(f'serving_model_info{{activity="{a.name}"}}', "v{{version}} ({{arch}})")],
+                       text_mode="name", desc=f"@champion of {a.model.registered_name}."), 4, 5)
+            L.add(timeseries("Windows above threshold", [
+                (f'sum(rate(serving_above_threshold_total{{activity="{a.name}"}}[5m])) / '
+                 f'clamp_min(sum(rate(serving_windows_total{{activity="{a.name}"}}[5m])), 1e-9)', "share")],
+                "percentunit"), 8, 5)
+        else:
+            L.add(stat("Kind", [("vector(1)", "")], mappings=[{"type": "value", "options": {
+                "1": {"text": "rule (no model)", "color": "blue"}}}], steps=[(None, "blue")],
+                desc="Rule-based: can become a trained model later (docs/ACTIVITIES.md)."), 12, 5)
+
+
 # ----------------------------------------------------------------------------------------------- model + drift
 def model():
     camera = {"name": "camera", "label": "Camera", "type": "query", "datasource": PROM,
@@ -209,6 +242,7 @@ def model():
         ('sum(rate(serving_shadow_above_threshold_total[5m])) / '
          'clamp_min(sum(rate(serving_shadow_windows_total[5m])), 1e-9)', "shadow")], "percentunit",
         desc="A challenger that would raise many more alerts than the champion shows here before promotion."), 12, 7)
+    activity_rows(L)
     L.row("Concept drift (human feedback)")
     L.add(stat("False-alarm rate (labelled alerts, 7 d)", [("rover_false_alarm_rate", "")], "percentunit",
                steps=[(None, "green"), (0.3, "orange"), (0.5, "red")]), 8, 6)

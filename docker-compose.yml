@@ -38,8 +38,8 @@ x-airflow-env: &airflow-env
   MINIO_ROOT_USER: ${MINIO_ROOT_USER}
   MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
   SERVING_URL: http://serving:8000/v1/models/fight
-  RETRAIN_MIN_NEW_LABELS: ${RETRAIN_MIN_NEW_LABELS:-5}
-  RETRAIN_MAX_AGE_DAYS: ${RETRAIN_MAX_AGE_DAYS:-7}
+  RETRAIN_MIN_NEW_LABELS: ${RETRAIN_MIN_NEW_LABELS:-}       # empty = activities.yaml retraining.min_new_labels
+  RETRAIN_MAX_AGE_DAYS: ${RETRAIN_MAX_AGE_DAYS:-}           # empty = activities.yaml retraining.max_age_days
 
 x-airflow: &airflow
   build:
@@ -173,7 +173,7 @@ services:
         condition: service_healthy
     environment:
       MLFLOW_TRACKING_URI: http://mlflow:5000
-      SERVING_MODELS: ${SERVING_MODELS:-fight=fight-detector}     # activity=registered-model, comma separated
+      SERVING_MODELS: ${SERVING_MODELS:-}     # empty = every model activity of activities.yaml
       MODEL_SOURCE: ${MODEL_SOURCE:-registry}                     # registry | local (./models mounted below)
       MODEL_ALIAS: ${MODEL_ALIAS:-champion}
       SHADOW_ALIAS: ${SHADOW_ALIAS-challenger}                    # scored next to the champion, never returned ("" = off)
@@ -403,7 +403,7 @@ services:
     mem_limit: 384m
 
   # ================= mlops profile:  docker compose --profile mlops up -d =================
-  # ---------------- Airflow: the retraining pipeline (airflow/dags/fight_retraining.py) ----------------
+  # ---------------- Airflow: the retraining pipelines (airflow/dags/retraining.py, one DAG per model activity) ----------------
   airflow-init:                               # one-shot: database migration + admin user
     <<: *airflow
     command: ["bash", "/opt/rover/docker/airflow/init.sh"]

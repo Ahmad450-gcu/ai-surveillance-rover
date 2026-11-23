@@ -11,6 +11,8 @@ WORKDIR /app
 COPY serving/requirements.txt serving/requirements.txt
 RUN pip install -r serving/requirements.txt
 
+COPY activities.yaml ./
+COPY rover_ai/__init__.py rover_ai/activities.py rover_ai/
 COPY serving/ serving/
 # the release model (python -m mlops.registry release): served only while the registry has no champion, e.g. on a
 # freshly deployed server, so a new deployment answers from the first minute

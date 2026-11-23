@@ -3,6 +3,10 @@
 The model is not trained once and left alone. Live data is watched, people review the alerts, and both feed back
 into training. A new model replaces the one in service only if it is measurably better on the same test clips.
 
+Since Phase 9 the DAG is built from the activity registry (`airflow/dags/retraining.py`): every model activity with a
+`retraining` section in [`activities.yaml`](../activities.yaml) gets its own DAG (`fight_retraining` today), and a drift
+alert creates one retraining request per such activity ([ACTIVITIES.md](ACTIVITIES.md)).
+
 ```mermaid
 flowchart LR
   STREAM[Kafka + Spark<br/>stream alerts] --> BE[backend<br/>alerts table]

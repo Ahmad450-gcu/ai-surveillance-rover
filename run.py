@@ -17,10 +17,8 @@ import yaml
 
 from rover_ai.alerts import AlertManager
 from rover_ai.draw import draw_hud, draw_item, draw_person, draw_zones, person_color
-from rover_ai.fight import FightDetector, static_fight
-from rover_ai.rules import AccessRule, LoiterRule, static_access
+from rover_ai.plugins import FrameContext, build_plugins
 from rover_ai.settings import load_config
-from rover_ai.theft import TheftDetector
 from rover_ai.tracks import PeopleState
 from rover_ai.vision import Detector
 from rover_ai.zones import ZoneEditor, Zones
@@ -131,41 +129,17 @@ def rover_info(controller):
             f"sonar {dist if dist else '--'} cm{flag} | GPS {gps}")
 
 
-def make_fight_detector(fcfg):
-    """Trained model if available (fight.method: model), otherwise the hand-tuned rules."""
-    if fcfg.get("method", "rules") == "model":
-        from rover_ai.learned import LearnedFightDetector, is_remote
-        ref = fcfg.get("model", "models/fight_model.onnx")
-        path = ROOT / ref if not is_remote(ref) else None
-        if path is None or path.exists():
-            try:
-                det = LearnedFightDetector(fcfg, ROOT)
-            except OSError as e:                                  # serving API not reachable at start-up
-                print(f"Fight detection: serving API {ref} unreachable ({e}), using hand-tuned rules")
-                return FightDetector(fcfg)
-            reg = det.meta.get("registry", {})
-            ver = f"{reg['model']} v{reg['version']} ({reg['alias']}), " if reg else ""
-            print(f"Fight detection: trained {det.meta['arch'].get('type', 'gru').upper()} "
-                  f"{ref if path is None else path.name} ({ver}threshold {det.thr:.2f})")
-            return det
-        print(f"Fight detection: {path.name} not found, using hand-tuned rules "
-              "(deploy the registry champion: python -m mlops.registry pull)")
-    return FightDetector(fcfg)
-
-
 def run_stream(source, cfg, args, controller=None):
     src = FrameSource(source, cfg["camera"])
-    anchor = cfg["zones"]["anchor"]
 
     detector = Detector(cfg, ROOT)
     zones = Zones(ROOT / cfg["zones"]["file"])
     editor = ZoneEditor(zones)
     alerts = AlertManager(cfg["alerts"], ROOT)
     people = PeopleState()
-    loiter = LoiterRule(cfg["loitering"], anchor) if cfg["loitering"]["enabled"] else None
-    access = AccessRule(anchor) if cfg["access"]["enabled"] else None
-    fight = make_fight_detector(cfg["fight"]) if cfg["fight"]["enabled"] else None
-    theft = TheftDetector(cfg["theft"]) if cfg["theft"]["enabled"] else None
+    plugins = build_plugins(cfg, ROOT)               # every enabled activity of activities.yaml
+    print("Activities:", ", ".join(p.name for p in plugins) or "none")
+    item_status = next((p.item_status for p in plugins if p.name == "theft"), lambda it: "")
 
     publisher = None
     if cfg["streaming"]["enabled"]:
@@ -217,26 +191,21 @@ def run_stream(source, cfg, args, controller=None):
             zones_active = controller is None or controller.mode == "guard"
             if controller:
                 controller.observe(n_people)
-                if theft and controller.camera_moving():
-                    theft.reset()      # everything shifts in the picture when the rover moves
-            flags = defaultdict(set)
-            events, energy = [], {}
-            if loiter:
-                events += loiter.update(tracks, zones, t, frame.shape, flags)
-            if access and zones_active:
-                events += access.update(tracks, zones, t, frame.shape, flags)
-            # with streaming, the stream judges fights; this computer does it only while Kafka is unreachable
-            if fight and not (publisher and publisher.server_scores_fights):
-                ev, energy = fight.update(tracks, t, flags)
-                events += ev
-            if theft:
-                events += theft.update(items, tracks, t, fresh, flags)
+                if controller.camera_moving():
+                    for p in plugins:
+                        p.reset()      # everything shifts in the picture when the rover moves
+            # with streaming, the stream judges its activities; this computer does it only while Kafka is unreachable
+            ctx = FrameContext(tracks=tracks, t=t, shape=frame.shape, zones=zones, zones_active=zones_active,
+                               items=items, fresh=fresh,
+                               server_scored=publisher.server_scored if publisher else frozenset())
+            events = [e for p in plugins for e in p.update(ctx)]
+            flags, energy = ctx.flags, ctx.energy
 
             view = frame.copy()
             if zones_active:
                 draw_zones(view, zones, editor)
             for it in items:
-                draw_item(view, it, theft.status(it) if theft else "")
+                draw_item(view, it, item_status(it))
             for p in persons:
                 tr = people.tracks.get(p.track_id)
                 f = flags.get(p.track_id, set())
@@ -334,6 +303,7 @@ def run_images(paths, cfg, args):
     detector = Detector(cfg, ROOT)
     zones = Zones(ROOT / cfg["zones"]["file"])
     alerts = AlertManager(cfg["alerts"], ROOT)
+    plugins = build_plugins(cfg, ROOT)
     out_dir = ROOT / "outputs"
     out_dir.mkdir(exist_ok=True)
     for path in paths:
@@ -343,11 +313,7 @@ def run_images(paths, cfg, args):
             continue
         persons, items, _ = detector(frame, track=False)
         flags = defaultdict(set)
-        events = []
-        if cfg["fight"]["enabled"]:
-            events += static_fight(persons, cfg["fight"]["proximity"], flags)
-        if cfg["access"]["enabled"]:
-            events += static_access(persons, zones, frame.shape, cfg["zones"]["anchor"], flags)
+        events = [e for p in plugins for e in p.static(persons, zones, frame.shape, flags)]
 
         view = frame.copy()
         draw_zones(view, zones, None)

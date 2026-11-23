@@ -140,7 +140,7 @@ def pull(name=None, alias="champion", dest="models", stem="fight_model"):
     dest = ROOT / dest
     dest.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
-        local = Path(mlflow.artifacts.download_artifacts(run_id=v.run_id, artifact_path=ARTIFACT_DIR, dst_path=tmp))
+        local = Path(mlflow.artifacts.download_artifacts(run_id=v.run_id, artifact_path=stem, dst_path=tmp))
         for f in local.iterdir():
             shutil.copy2(f, dest / f"{stem}{f.suffix}")
     meta = json.loads((dest / f"{stem}.json").read_text())
@@ -203,8 +203,20 @@ def list_versions(name=None):
               f"{','.join(aliases.get(v.version, []))} {v.tags.get('promotion', '')}")
 
 
-def main():
+def model_of(activity):
+    """activities.yaml: activity -> (registered model name, promotion report path)."""
+    from rover_ai import activities
+    acts = activities.load()
+    if activity not in acts or not acts[activity].is_model:
+        sys.exit(f"{activity!r} is not a model activity in activities.yaml: "
+                 f"{', '.join(activities.models(acts)) or 'none'}")
+    report = ROOT / "reports" / ("promotion.json" if activity == "fight" else f"promotion_{activity}.json")
+    return acts[activity].model.registered_name, report
+
+
+def main(argv=None):
     ap = argparse.ArgumentParser()
+    ap.add_argument("--activity", default="fight", help="model activity of activities.yaml (default: fight)")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("list")
     p = sub.add_parser("promote")
@@ -217,21 +229,22 @@ def main():
     p = sub.add_parser("set-alias", help="e.g. roll back: set-alias champion 1")
     p.add_argument("alias")
     p.add_argument("version")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
+    name, report = model_of(args.activity)
     if args.cmd == "list":
-        list_versions()
+        list_versions(name)
     elif args.cmd == "promote":
-        promote(force=args.force)
+        promote(name, force=args.force, report=report)
     elif args.cmd == "pull":
-        pull(alias=args.alias, dest=args.dest)
+        pull(name, alias=args.alias, dest=args.dest, stem=f"{args.activity}_model")
     elif args.cmd == "release":
         release()
     elif args.cmd == "seed":
         seed()
     else:
         _, client = connect()
-        client.set_registered_model_alias(params()["model_name"], args.alias, args.version)
-        print(f"{params()['model_name']}: alias {args.alias} -> v{args.version}")
+        client.set_registered_model_alias(name, args.alias, args.version)
+        print(f"{name}: alias {args.alias} -> v{args.version}")
 
 
 if __name__ == "__main__":

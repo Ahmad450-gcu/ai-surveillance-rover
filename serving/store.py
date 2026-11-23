@@ -28,7 +28,7 @@ from pathlib import Path
 import numpy as np
 
 log = logging.getLogger("serving")
-ARTIFACT_DIR = "fight_model"            # run artifact folder written by training (model.onnx, model.json)
+ARTIFACT_DIR = "{activity}_model"       # run artifact folder written by training (model.onnx, model.json)
 
 
 @dataclass
@@ -132,7 +132,7 @@ class ModelStore:
         folder = self.cache_dir / name / f"v{version}"
         for f in ("model.onnx", "model.json"):
             if not (folder / f).exists():
-                self.registry.download(run_id, f"{ARTIFACT_DIR}/{f}", folder / f)
+                self.registry.download(run_id, f"{ARTIFACT_DIR.format(activity=activity)}/{f}", folder / f)
         meta = json.loads((folder / "model.json").read_text())
         meta["registry"] = dict(model=name, version=int(version), alias=alias, run_id=run_id)
         session = _session(folder / "model.onnx", self.threads)

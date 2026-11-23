@@ -9,8 +9,8 @@ WORKDIR /app
 COPY backend/requirements.txt backend/requirements.txt
 RUN pip install -r backend/requirements.txt
 
-COPY config.yaml ./
-COPY rover_ai/__init__.py rover_ai/settings.py rover_ai/
+COPY config.yaml activities.yaml ./
+COPY rover_ai/__init__.py rover_ai/settings.py rover_ai/activities.py rover_ai/
 COPY backend/ backend/
 
 RUN useradd --create-home --uid 1000 app && mkdir -p alerts && chown -R app /app

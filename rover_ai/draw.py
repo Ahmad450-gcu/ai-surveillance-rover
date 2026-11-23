@@ -26,7 +26,7 @@ def _text(img, txt, org, color=WHITE, scale=0.5, bg=(0, 0, 0)):
 def person_color(flags):
     if flags & {"FIGHT", "FIGHT?", "RESTRICTED", "THEFT"}:
         return RED
-    if "LOITERING" in flags:
+    if flags & {"LOITERING", "CROWD"}:
         return ORANGE
     return GREEN
 

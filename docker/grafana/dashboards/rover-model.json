@@ -852,11 +852,897 @@
   {
    "id": 17,
    "type": "row",
-   "title": "Concept drift (human feedback)",
+   "title": "Activity: Loitering",
    "collapsed": false,
    "gridPos": {
     "x": 0,
     "y": 40,
+    "w": 24,
+    "h": 1
+   }
+  },
+  {
+   "type": "stat",
+   "title": "Alerts (24 h)",
+   "description": "Loitering alerts stored by the backend (rule: the same person stays in view (or inside a loiter zone) longer than loitering.seconds).",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum(increase(rover_alerts_received_total{type=\"loitering\"}[24h])) or vector(0)",
+     "legendFormat": "",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "background",
+    "graphMode": "none",
+    "textMode": "auto",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    }
+   },
+   "id": 18,
+   "gridPos": {
+    "x": 0,
+    "y": 41,
+    "w": 4,
+    "h": 5
+   }
+  },
+  {
+   "type": "table",
+   "title": "Feedback (7 d)",
+   "description": "Human labels from the dashboard; for a model activity they become training data.",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "postgres"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "postgres"
+     },
+     "rawSql": "SELECT count(*) AS alerts, count(*) FILTER (WHERE label = 'real') AS real, count(*) FILTER (WHERE label = 'false_alarm') AS false_alarm, count(*) FILTER (WHERE label IS NULL) AS not_reviewed FROM alerts WHERE type = 'loitering' AND received > now() - interval '7 days'",
+     "format": "table",
+     "rawQuery": true,
+     "editorMode": "code",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   },
+   "options": {
+    "showHeader": true
+   },
+   "id": 19,
+   "gridPos": {
+    "x": 4,
+    "y": 41,
+    "w": 8,
+    "h": 5
+   }
+  },
+  {
+   "type": "stat",
+   "title": "Kind",
+   "description": "Rule-based: can become a trained model later (docs/ACTIVITIES.md).",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "vector(1)",
+     "legendFormat": "",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "mappings": [
+      {
+       "type": "value",
+       "options": {
+        "1": {
+         "text": "rule (no model)",
+         "color": "blue"
+        }
+       }
+      }
+     ],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "blue",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "background",
+    "graphMode": "none",
+    "textMode": "auto",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    }
+   },
+   "id": 20,
+   "gridPos": {
+    "x": 12,
+    "y": 41,
+    "w": 12,
+    "h": 5
+   }
+  },
+  {
+   "id": 21,
+   "type": "row",
+   "title": "Activity: Unauthorised access",
+   "collapsed": false,
+   "gridPos": {
+    "x": 0,
+    "y": 46,
+    "w": 24,
+    "h": 1
+   }
+  },
+  {
+   "type": "stat",
+   "title": "Alerts (24 h)",
+   "description": "Unauthorised access alerts stored by the backend (rule: a person's anchor point (feet or body) enters a restricted zone drawn on the picture).",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum(increase(rover_alerts_received_total{type=\"restricted\"}[24h])) or vector(0)",
+     "legendFormat": "",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "background",
+    "graphMode": "none",
+    "textMode": "auto",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    }
+   },
+   "id": 22,
+   "gridPos": {
+    "x": 0,
+    "y": 47,
+    "w": 4,
+    "h": 5
+   }
+  },
+  {
+   "type": "table",
+   "title": "Feedback (7 d)",
+   "description": "Human labels from the dashboard; for a model activity they become training data.",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "postgres"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "postgres"
+     },
+     "rawSql": "SELECT count(*) AS alerts, count(*) FILTER (WHERE label = 'real') AS real, count(*) FILTER (WHERE label = 'false_alarm') AS false_alarm, count(*) FILTER (WHERE label IS NULL) AS not_reviewed FROM alerts WHERE type = 'restricted' AND received > now() - interval '7 days'",
+     "format": "table",
+     "rawQuery": true,
+     "editorMode": "code",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   },
+   "options": {
+    "showHeader": true
+   },
+   "id": 23,
+   "gridPos": {
+    "x": 4,
+    "y": 47,
+    "w": 8,
+    "h": 5
+   }
+  },
+  {
+   "type": "stat",
+   "title": "Kind",
+   "description": "Rule-based: can become a trained model later (docs/ACTIVITIES.md).",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "vector(1)",
+     "legendFormat": "",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "mappings": [
+      {
+       "type": "value",
+       "options": {
+        "1": {
+         "text": "rule (no model)",
+         "color": "blue"
+        }
+       }
+      }
+     ],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "blue",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "background",
+    "graphMode": "none",
+    "textMode": "auto",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    }
+   },
+   "id": 24,
+   "gridPos": {
+    "x": 12,
+    "y": 47,
+    "w": 12,
+    "h": 5
+   }
+  },
+  {
+   "id": 25,
+   "type": "row",
+   "title": "Activity: Fighting",
+   "collapsed": false,
+   "gridPos": {
+    "x": 0,
+    "y": 52,
+    "w": 24,
+    "h": 1
+   }
+  },
+  {
+   "type": "stat",
+   "title": "Alerts (24 h)",
+   "description": "Fighting alerts stored by the backend (model: a neural network judges 2 s of two nearby people's skeletons; alert after N judgements in a row).",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum(increase(rover_alerts_received_total{type=\"fight\"}[24h])) or vector(0)",
+     "legendFormat": "",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "background",
+    "graphMode": "none",
+    "textMode": "auto",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    }
+   },
+   "id": 26,
+   "gridPos": {
+    "x": 0,
+    "y": 53,
+    "w": 4,
+    "h": 5
+   }
+  },
+  {
+   "type": "table",
+   "title": "Feedback (7 d)",
+   "description": "Human labels from the dashboard; for a model activity they become training data.",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "postgres"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "postgres"
+     },
+     "rawSql": "SELECT count(*) AS alerts, count(*) FILTER (WHERE label = 'real') AS real, count(*) FILTER (WHERE label = 'false_alarm') AS false_alarm, count(*) FILTER (WHERE label IS NULL) AS not_reviewed FROM alerts WHERE type = 'fight' AND received > now() - interval '7 days'",
+     "format": "table",
+     "rawQuery": true,
+     "editorMode": "code",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   },
+   "options": {
+    "showHeader": true
+   },
+   "id": 27,
+   "gridPos": {
+    "x": 4,
+    "y": 53,
+    "w": 8,
+    "h": 5
+   }
+  },
+  {
+   "type": "stat",
+   "title": "Model in production",
+   "description": "@champion of fight-detector.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "serving_model_info{activity=\"fight\"}",
+     "legendFormat": "v{{version}} ({{arch}})",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "background",
+    "graphMode": "none",
+    "textMode": "name",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    }
+   },
+   "id": 28,
+   "gridPos": {
+    "x": 12,
+    "y": 53,
+    "w": 4,
+    "h": 5
+   }
+  },
+  {
+   "type": "timeseries",
+   "title": "Windows above threshold",
+   "description": "",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum(rate(serving_above_threshold_total{activity=\"fight\"}[5m])) / clamp_min(sum(rate(serving_windows_total{activity=\"fight\"}[5m])), 1e-9)",
+     "legendFormat": "share",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percentunit",
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 10,
+      "showPoints": "never"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   },
+   "id": 29,
+   "gridPos": {
+    "x": 16,
+    "y": 53,
+    "w": 8,
+    "h": 5
+   }
+  },
+  {
+   "id": 30,
+   "type": "row",
+   "title": "Activity: Stealing",
+   "collapsed": false,
+   "gridPos": {
+    "x": 0,
+    "y": 58,
+    "w": 24,
+    "h": 1
+   }
+  },
+  {
+   "type": "stat",
+   "title": "Alerts (24 h)",
+   "description": "Stealing alerts stored by the backend (rule: an object sits still and becomes guarded; a hand touches it and it is moved away or disappears).",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum(increase(rover_alerts_received_total{type=\"theft\"}[24h])) or vector(0)",
+     "legendFormat": "",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "background",
+    "graphMode": "none",
+    "textMode": "auto",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    }
+   },
+   "id": 31,
+   "gridPos": {
+    "x": 0,
+    "y": 59,
+    "w": 4,
+    "h": 5
+   }
+  },
+  {
+   "type": "table",
+   "title": "Feedback (7 d)",
+   "description": "Human labels from the dashboard; for a model activity they become training data.",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "postgres"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "postgres"
+     },
+     "rawSql": "SELECT count(*) AS alerts, count(*) FILTER (WHERE label = 'real') AS real, count(*) FILTER (WHERE label = 'false_alarm') AS false_alarm, count(*) FILTER (WHERE label IS NULL) AS not_reviewed FROM alerts WHERE type = 'theft' AND received > now() - interval '7 days'",
+     "format": "table",
+     "rawQuery": true,
+     "editorMode": "code",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   },
+   "options": {
+    "showHeader": true
+   },
+   "id": 32,
+   "gridPos": {
+    "x": 4,
+    "y": 59,
+    "w": 8,
+    "h": 5
+   }
+  },
+  {
+   "type": "stat",
+   "title": "Kind",
+   "description": "Rule-based: can become a trained model later (docs/ACTIVITIES.md).",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "vector(1)",
+     "legendFormat": "",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "mappings": [
+      {
+       "type": "value",
+       "options": {
+        "1": {
+         "text": "rule (no model)",
+         "color": "blue"
+        }
+       }
+      }
+     ],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "blue",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "background",
+    "graphMode": "none",
+    "textMode": "auto",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    }
+   },
+   "id": 33,
+   "gridPos": {
+    "x": 12,
+    "y": 59,
+    "w": 12,
+    "h": 5
+   }
+  },
+  {
+   "id": 34,
+   "type": "row",
+   "title": "Activity: Crowding",
+   "collapsed": false,
+   "gridPos": {
+    "x": 0,
+    "y": 64,
+    "w": 24,
+    "h": 1
+   }
+  },
+  {
+   "type": "stat",
+   "title": "Alerts (24 h)",
+   "description": "Crowding alerts stored by the backend (rule: more than crowding.max_people people in view for crowding.seconds (a gathering)).",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "sum(increase(rover_alerts_received_total{type=\"crowding\"}[24h])) or vector(0)",
+     "legendFormat": "",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "mappings": [],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "background",
+    "graphMode": "none",
+    "textMode": "auto",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    }
+   },
+   "id": 35,
+   "gridPos": {
+    "x": 0,
+    "y": 65,
+    "w": 4,
+    "h": 5
+   }
+  },
+  {
+   "type": "table",
+   "title": "Feedback (7 d)",
+   "description": "Human labels from the dashboard; for a model activity they become training data.",
+   "datasource": {
+    "type": "grafana-postgresql-datasource",
+    "uid": "postgres"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "grafana-postgresql-datasource",
+      "uid": "postgres"
+     },
+     "rawSql": "SELECT count(*) AS alerts, count(*) FILTER (WHERE label = 'real') AS real, count(*) FILTER (WHERE label = 'false_alarm') AS false_alarm, count(*) FILTER (WHERE label IS NULL) AS not_reviewed FROM alerts WHERE type = 'crowding' AND received > now() - interval '7 days'",
+     "format": "table",
+     "rawQuery": true,
+     "editorMode": "code",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {},
+    "overrides": []
+   },
+   "options": {
+    "showHeader": true
+   },
+   "id": 36,
+   "gridPos": {
+    "x": 4,
+    "y": 65,
+    "w": 8,
+    "h": 5
+   }
+  },
+  {
+   "type": "stat",
+   "title": "Kind",
+   "description": "Rule-based: can become a trained model later (docs/ACTIVITIES.md).",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prometheus"
+   },
+   "targets": [
+    {
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prometheus"
+     },
+     "expr": "vector(1)",
+     "legendFormat": "",
+     "refId": "A"
+    }
+   ],
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "mappings": [
+      {
+       "type": "value",
+       "options": {
+        "1": {
+         "text": "rule (no model)",
+         "color": "blue"
+        }
+       }
+      }
+     ],
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "blue",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "colorMode": "background",
+    "graphMode": "none",
+    "textMode": "auto",
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    }
+   },
+   "id": 37,
+   "gridPos": {
+    "x": 12,
+    "y": 65,
+    "w": 12,
+    "h": 5
+   }
+  },
+  {
+   "id": 38,
+   "type": "row",
+   "title": "Concept drift (human feedback)",
+   "collapsed": false,
+   "gridPos": {
+    "x": 0,
+    "y": 70,
     "w": 24,
     "h": 1
    }
@@ -916,10 +1802,10 @@
      "values": false
     }
    },
-   "id": 18,
+   "id": 39,
    "gridPos": {
     "x": 0,
-    "y": 41,
+    "y": 71,
     "w": 8,
     "h": 6
    }
@@ -971,10 +1857,10 @@
      "values": false
     }
    },
-   "id": 19,
+   "id": 40,
    "gridPos": {
     "x": 8,
-    "y": 41,
+    "y": 71,
     "w": 8,
     "h": 6
    }
@@ -1030,10 +1916,10 @@
      "values": false
     }
    },
-   "id": 20,
+   "id": 41,
    "gridPos": {
     "x": 16,
-    "y": 41,
+    "y": 71,
     "w": 8,
     "h": 6
    }
@@ -1066,10 +1952,10 @@
    "options": {
     "showHeader": true
    },
-   "id": 21,
+   "id": 42,
    "gridPos": {
     "x": 0,
-    "y": 47,
+    "y": 77,
     "w": 12,
     "h": 7
    }
@@ -1102,10 +1988,10 @@
    "options": {
     "showHeader": true
    },
-   "id": 22,
+   "id": 43,
    "gridPos": {
     "x": 12,
-    "y": 47,
+    "y": 77,
     "w": 12,
     "h": 7
    }

@@ -12,6 +12,7 @@ Who talks to it:
 """
 import hashlib
 import hmac
+import logging
 import secrets
 import time
 from datetime import datetime, timedelta, timezone
@@ -45,7 +46,24 @@ ALERTS_DIR = (ROOT / CFG["alerts"]["dir"]).resolve()
 DEVICE_TOKEN = str(CFG["backend"]["device_token"])
 SECRET_PATH = HERE / ".jwt_secret"
 TOKEN_HOURS = 12
-ALERT_TYPES = ("fight", "theft", "loitering", "restricted")
+
+log = logging.getLogger("backend")
+
+
+def _activities():
+    """The activity registry (activities.yaml); the built-in four if it can't be read."""
+    try:
+        from rover_ai import activities
+        return [dict(name=a.name, title=a.title, kind=a.kind, alert_type=a.alert_type, description=a.description)
+                for a in activities.load().values()]
+    except Exception as e:                                       # noqa: BLE001
+        log.warning("activities.yaml not readable (%s): using the built-in activity list", e)
+        return [dict(name=n, title=n.capitalize(), kind="rule", alert_type=t, description="")
+                for n, t in (("loitering", "loitering"), ("access", "restricted"), ("fight", "fight"), ("theft", "theft"))]
+
+
+ACTIVITIES = _activities()
+ALERT_TYPES = tuple(a["alert_type"] for a in ACTIVITIES)
 MODES = ("manual", "guard", "patrol")
 DRIVES = ("forward", "back", "left", "right", "stop")
 
@@ -204,6 +222,12 @@ def me(user=Depends(current_user)):
 
 
 # ---------------- alerts ----------------
+@app.get("/api/activities")
+def list_activities():
+    """Registered activities (activities.yaml): what can raise an alert, and whether it is a rule or a model."""
+    return ACTIVITIES
+
+
 @app.get("/api/alerts")
 def list_alerts(limit: int = 50, type: str | None = None, after_id: int = 0, user=Depends(current_user)):
     stmt = select(alerts).where(alerts.c.id > after_id)

@@ -13,8 +13,8 @@
     GET  /metrics                         Prometheus metrics (requests, latency, scores, model version)
 
 Settings (environment variables, see .env.example):
-    SERVING_MODELS     activity=registered-model pairs, default "fight=fight-detector"
-                       (a future activity model is one more pair, e.g. "fight=fight-detector,theft=theft-detector")
+    SERVING_MODELS     activity=registered-model pairs; empty = every model activity of activities.yaml
+                       (a new model activity is one more entry there, or one more pair here)
     MODEL_SOURCE       registry (default) | local
     MLFLOW_TRACKING_URI, MODEL_ALIAS (champion), MODEL_DIR (local source: <activity>_model.onnx + .json)
     RELOAD_SECONDS     how often to look for a new champion (default 60, 0 = never)
@@ -78,8 +78,18 @@ def parse_models(text):
     return {a.strip(): n.strip() for a, n in pairs}
 
 
+def default_models():
+    """Every model activity of activities.yaml (activity -> registered model); fight only if the file is missing."""
+    try:
+        from rover_ai import activities
+        return activities.models() or {"fight": "fight-detector"}
+    except (ImportError, OSError):
+        return {"fight": "fight-detector"}
+
+
 def make_store():
-    return ModelStore(parse_models(os.environ.get("SERVING_MODELS", "fight=fight-detector")),
+    text = os.environ.get("SERVING_MODELS", "").strip()
+    return ModelStore(parse_models(text) if text else default_models(),
                       source=os.environ.get("MODEL_SOURCE", "registry"),
                       registry_uri=os.environ.get("MLFLOW_TRACKING_URI", "http://localhost:5000"),
                       alias=os.environ.get("MODEL_ALIAS", "champion"),

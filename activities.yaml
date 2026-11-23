@@ -1,0 +1,72 @@
+# Activity registry: every suspicious activity the system detects, in one place.
+#
+# Each entry is read by every part of the pipeline (python -m rover_ai.activities list):
+#   edge detector (run.py)       builds the plugin  `plugin`  with the settings of config.yaml section `config`
+#   backend                      accepts alerts of type `alert_type`
+#   model serving API            serves `model.registered_name` (@champion) at /v1/models/<activity>
+#   stream (Spark)               scores the activity on the server when `stream: true`
+#   retraining (Airflow)         one DAG per entry with `retraining` (dag id, schedule, triggers, DVC stages)
+#   Grafana                      one row of panels per activity (docker/grafana/build_dashboards.py)
+#
+# kind: rule   hand-written logic, no training (plugin only)
+#       model  a trained model from the MLflow registry (plugin + model + training stage + retraining DAG)
+#
+# Add an activity:  python -m rover_ai.activities new <name> --kind rule|model   (docs/ACTIVITIES.md)
+# Check the wiring: python -m rover_ai.activities check                           (also run by CI)
+# Order = the order in which the detector evaluates them on every frame.
+
+activities:
+  loitering:
+    title: Loitering
+    kind: rule
+    description: the same person stays in view (or inside a loiter zone) longer than loitering.seconds
+    plugin: rover_ai.plugins:LoiterPlugin
+    config: loitering
+    alert_type: loitering
+
+  access:
+    title: Unauthorised access
+    kind: rule
+    description: a person's anchor point (feet or body) enters a restricted zone drawn on the picture
+    plugin: rover_ai.plugins:AccessPlugin
+    config: access
+    alert_type: restricted
+
+  fight:
+    title: Fighting
+    kind: model
+    description: a neural network judges 2 s of two nearby people's skeletons; alert after N judgements in a row
+    plugin: rover_ai.plugins:FightPlugin
+    config: fight
+    alert_type: fight
+    model:
+      registered_name: fight-detector     # MLflow registered model (aliases champion / challenger)
+      input: person_pair                  # one sample = person_pair | person | scene
+      window_frames: 20                   # 2 s at 10 fps
+      train_stage: train_fight            # DVC stage that trains it and registers a new @challenger
+      metrics: reports/fight_metrics.json
+    stream: true                          # scored by the Spark job through the serving API
+    retraining:
+      dag: fight_retraining
+      schedule: "0 3 * * *"               # daily check: is retraining due?
+      on_drift: true                      # a drift alert starts it
+      min_new_labels: 5                   # ...or this many newly labelled alerts
+      max_age_days: 7                     # ...or a model older than this
+      prepare: python -m training.feedback export      # labelled stream alerts -> data/manifests/feedback_labels.json
+      stages: [feedback, features, train_fight, drift_reference]   # DVC stages, in order
+
+  theft:
+    title: Stealing
+    kind: rule
+    description: an object sits still and becomes guarded; a hand touches it and it is moved away or disappears
+    plugin: rover_ai.plugins:TheftPlugin
+    config: theft
+    alert_type: theft
+
+  crowding:
+    title: Crowding
+    kind: rule
+    description: more than crowding.max_people people in view for crowding.seconds (a gathering)
+    plugin: rover_ai.plugins:CrowdingPlugin
+    config: crowding
+    alert_type: crowding

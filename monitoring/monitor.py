@@ -14,8 +14,9 @@ HTTP (port 9200):
   GET  /metrics        Prometheus metrics (rover_drift_*, rover_prediction_*, rover_false_alarm_rate, ...)
   GET  /report         the latest drift report (JSON; also saved to s3://processed/monitoring/drift/)
   POST /alertmanager   Alertmanager webhook: every alert is stored in table ops_events; a firing alert labelled
-                       action="retrain" creates a row in table retrain_requests and starts the Airflow DAG
-                       fight_retraining (AIRFLOW_URL); if Airflow is down, its daily run picks the request up
+                       action="retrain" creates a retraining request (table retrain_requests) for every model
+                       activity with retraining.on_drift in activities.yaml and starts its Airflow DAG (e.g.
+                       fight_retraining, AIRFLOW_URL); if Airflow is down, the DAG's daily run picks the request up
   GET  /health
 """
 import json
@@ -56,7 +57,18 @@ CREATE TABLE IF NOT EXISTS retrain_requests (
     handled_at TIMESTAMPTZ,
     run_id TEXT
 );
+ALTER TABLE retrain_requests ADD COLUMN IF NOT EXISTS activity TEXT NOT NULL DEFAULT 'fight';
 """
+
+
+def drift_retrain_targets():
+    """activity -> retraining DAG id, for every activity that retrains on drift (activities.yaml)."""
+    try:
+        from rover_ai import activities
+        return {a.name: a.retraining.dag for a in activities.retrained() if a.retraining.on_drift}
+    except Exception as e:                                         # noqa: BLE001 - keep monitoring
+        log.warning("activities.yaml not readable (%s): drift retrains the fight model only", e)
+        return {"fight": "fight_retraining"}
 
 
 class Metrics:
@@ -88,14 +100,16 @@ class Metrics:
 
 
 class Monitor:
-    def __init__(self, lake=None, db=None, window_minutes=60, min_samples=200, min_frames=1000, trigger=None):
+    def __init__(self, lake=None, db=None, window_minutes=60, min_samples=200, min_frames=1000, trigger=None,
+                 retrain_targets=None):
         self.lake = lake                # mlops.lake module (S3 client), injectable for tests
         self.db = db                    # callable -> psycopg connection, injectable for tests
         self.window = timedelta(minutes=window_minutes)
         self.min_samples = min_samples          # values per feature, and ...
         self.min_frames = min_frames            # ... frames per camera (~2 min of video): a few seconds of one
                                                 # unusual scene is not a camera that drifted
-        self.trigger = trigger                  # callable(request_id): starts the retraining DAG (None = don't)
+        self.trigger = trigger                  # callable(request_id, dag): starts a retraining DAG (None = don't)
+        self.retrain_targets = retrain_targets if retrain_targets is not None else drift_retrain_targets()
         self.metrics = Metrics()
         self.reference = None
         self.report = {}
@@ -227,38 +241,41 @@ class Monitor:
                              (status, name, labels.get("severity"), a.get("annotations", {}).get("summary"),
                               json.dumps(labels), a.get("startsAt")))
                 self.metrics.webhooks.labels(name, status).inc()
-                if status == "firing" and labels.get("action") == "retrain":
-                    pending = conn.execute("SELECT id FROM retrain_requests WHERE status IN ('pending', 'running') "
-                                           "LIMIT 1").fetchone()
-                    if pending is None:
-                        rid = conn.execute("INSERT INTO retrain_requests (reason, details) VALUES (%s, %s) "
-                                           "RETURNING id", (name, json.dumps({"alert": a, "drift": self.report})
-                                                            )).fetchone()[0]
-                        self.metrics.retrain.labels(name).inc()
-                        created.append(rid)
-                        log.warning("retraining requested (%s): request %d", name, rid)
-        for rid in created:                       # after the commit, so the DAG sees the request
+                if status != "firing" or labels.get("action") != "retrain":
+                    continue
+                for activity, dag in self.retrain_targets.items():        # one request per model activity
+                    pending = conn.execute("SELECT id FROM retrain_requests WHERE activity = %s AND status IN "
+                                           "('pending', 'running') LIMIT 1", (activity,)).fetchone()
+                    if pending is not None:                               # one is already waiting / running
+                        continue
+                    rid = conn.execute("INSERT INTO retrain_requests (reason, details, activity) VALUES (%s, %s, %s) "
+                                       "RETURNING id", (name, json.dumps({"alert": a, "drift": self.report}), activity)
+                                       ).fetchone()[0]
+                    self.metrics.retrain.labels(name).inc()
+                    created.append((rid, dag))
+                    log.warning("retraining requested (%s): request %d for %s", name, rid, activity)
+        for rid, dag in created:                  # after the commit, so the DAG sees the request
             if self.trigger:
                 try:
-                    self.trigger(rid)
+                    self.trigger(rid, dag)
                 except Exception as e:            # Airflow down: its daily run picks the pending request up
-                    log.warning("could not start the retraining DAG (%s); it will run at the next schedule", e)
-        return {"stored": len(payload.get("alerts", [])), "retrain_requests": created}
+                    log.warning("could not start %s (%s); it will run at the next schedule", dag, e)
+        return {"stored": len(payload.get("alerts", [])), "retrain_requests": [rid for rid, _ in created]}
 
 
-def airflow_trigger(url, user, password, dag="fight_retraining"):
-    """-> callable(request_id) that starts a DAG run through Airflow's REST API."""
+def airflow_trigger(url, user, password):
+    """-> callable(request_id, dag) that starts a DAG run through Airflow's REST API."""
     import base64
     import urllib.request
 
-    def trigger(request_id):
+    def trigger(request_id, dag):
         body = json.dumps({"conf": {"retrain_request": request_id}}).encode()
         req = urllib.request.Request(f"{url.rstrip('/')}/api/v1/dags/{dag}/dagRuns", data=body, method="POST",
                                      headers={"Content-Type": "application/json", "Authorization": "Basic " +
                                               base64.b64encode(f"{user}:{password}".encode()).decode()})
         with urllib.request.urlopen(req, timeout=10) as r:            # noqa: S310 - URL from our own settings
             run = json.loads(r.read())
-        log.warning("retraining DAG started: %s (request %d)", run.get("dag_run_id"), request_id)
+        log.warning("retraining DAG %s started: %s (request %d)", dag, run.get("dag_run_id"), request_id)
     return trigger
 
 

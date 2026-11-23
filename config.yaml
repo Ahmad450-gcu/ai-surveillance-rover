@@ -55,6 +55,11 @@ theft:
   vanish_seconds: 1.5               # guarded object disappeared for this long right after a hand touched it = taken
   hand_memory_seconds: 1.5          # how recently a hand must have touched it
 
+crowding:                           # activity added through the registry (activities.yaml, docs/ACTIVITIES.md)
+  enabled: false                    # off by default; demo: --set crowding.enabled=true
+  max_people: 5                     # more than this many people in view ...
+  seconds: 10                       # ... for this long = one CROWDING alert
+
 alerts:
   dir: alerts                       # snapshots, clips and alerts.jsonl go here
   cooldown_seconds: 10              # don't repeat the same alert more often than this

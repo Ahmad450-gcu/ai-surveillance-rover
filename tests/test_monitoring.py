@@ -78,19 +78,22 @@ class FakeDB:
         class Result:
             def fetchone(self):
                 if sql.startswith("SELECT id FROM retrain_requests"):
-                    return next(((r["id"],) for r in db.requests if r["status"] == "pending"), None)
+                    return next(((r["id"],) for r in db.requests
+                                 if r["status"] == "pending" and r["activity"] == params[0]), None)
                 return (db.requests[-1]["id"],)
         if sql.startswith("INSERT INTO ops_events"):
             self.events.append(params)
         elif sql.startswith("INSERT INTO retrain_requests"):
-            self.requests.append({"id": len(self.requests) + 1, "reason": params[0], "status": "pending"})
+            self.requests.append({"id": len(self.requests) + 1, "reason": params[0], "status": "pending",
+                                  "activity": params[2]})
         return Result()
 
 
 def test_alertmanager_webhook_stores_alerts_and_asks_for_retraining_once():
     db = FakeDB()
     started = []
-    m = Monitor(db=lambda: db, trigger=started.append)
+    m = Monitor(db=lambda: db, trigger=lambda rid, dag: started.append(rid),
+                retrain_targets={"fight": "fight_retraining"})
     drift_alert = {"status": "firing", "labels": {"alertname": "DataDriftDetected", "camera": "cam-2",
                                                   "severity": "warning", "action": "retrain"},
                    "annotations": {"summary": "Data drift on camera cam-2"}, "startsAt": "2026-11-22T10:00:00Z"}
@@ -104,8 +107,27 @@ def test_alertmanager_webhook_stores_alerts_and_asks_for_retraining_once():
     assert m.handle_alertmanager({"alerts": [resolved]})["retrain_requests"] == []
     assert started == [1, 2]                                   # the retraining DAG was started for each request
 
-    def airflow_down(_):
+    def airflow_down(*_):
         raise OSError("connection refused")
     m.trigger = airflow_down
     db.requests[-1]["status"] = "done"
     assert m.handle_alertmanager({"alerts": [drift_alert]})["retrain_requests"] == [3]   # still recorded
+
+
+def test_drift_asks_every_model_activity_that_retrains_on_drift():
+    db = FakeDB()
+    started = []
+    m = Monitor(db=lambda: db, trigger=lambda rid, dag: started.append((rid, dag)),
+                retrain_targets={"fight": "fight_retraining", "theft": "theft_retraining"})
+    alert = {"status": "firing", "labels": {"alertname": "DataDriftDetected", "action": "retrain"}}
+    assert m.handle_alertmanager({"alerts": [alert]})["retrain_requests"] == [1, 2]
+    assert started == [(1, "fight_retraining"), (2, "theft_retraining")]
+    assert [r["activity"] for r in db.requests] == ["fight", "theft"]
+    db.requests[1]["status"] = "done"                       # theft finished, fight still pending
+    assert m.handle_alertmanager({"alerts": [alert]})["retrain_requests"] == [3]
+    assert db.requests[-1]["activity"] == "theft"
+
+
+def test_drift_targets_come_from_the_activity_registry():
+    from monitoring.monitor import drift_retrain_targets
+    assert drift_retrain_targets() == {"fight": "fight_retraining"}

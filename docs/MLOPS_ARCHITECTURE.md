@@ -109,7 +109,7 @@ tuning (Optuna, CV on the train split only) feeds the best settings back into pa
 
 1. The rover streams video to the perception service (`run.py`: YOLO pose + tracking), which publishes per-frame pose and object records to Kafka.
 2. Spark validates each record. Invalid records go to the dead-letter topic. Valid ones are written to the lake and turned into 2-second windows.
-3. Each window is scored by every registered activity (ML models through the serving API; rule-based activities inline).
+3. Each window is scored by the activities of the registry: the stream scores the model activities marked `stream: true` through the serving API; the rule-based activities run on the detector.
 4. Predictions go to PostgreSQL. Alerts go to the `rover.alerts` topic, from which the alert bridge stores them in the backend (dashboard and app).
 5. **Graceful degradation:** if the streaming stack is unavailable, the detector falls back to in-process inference so the rover keeps protecting the area.
 
@@ -123,7 +123,9 @@ tuning (Optuna, CV on the train split only) feeds the best settings back into pa
 
 ## 7. Adding a new activity model
 
-All activities are declared in one place (`activities.yaml`, Phase 9): name, type (`rule` or `model`), MLflow model name, input window and threshold. From that entry the pipeline creates the training stage, the Airflow retraining DAG, the `/predict/<activity>` endpoint and the Grafana panels. Today *fighting* is a trained model; *loitering*, *unauthorised access* and *theft* are rules that use the same interface, so each can be replaced by a trained model later without changing the rest of the pipeline.
+All activities are declared in one place, [`activities.yaml`](../activities.yaml): kind (`rule` or `model`), plugin class, `config.yaml` section, alert type, and for models the MLflow model name, input, window, DVC training stage, whether the stream scores it and its retraining DAG. Every part reads that file: the detector builds one plugin per activity (`rover_ai/plugins.py`, a common `update(ctx)` interface), the serving API loads each model activity's `@champion` at `/v1/models/<activity>`, Airflow builds one retraining DAG per model activity, the drift monitor creates one retraining request per activity, the backend lists them (`/api/activities`) and Grafana gets one row each. `python -m rover_ai.activities check` (run by CI) fails if an activity is half-wired, and `python -m rover_ai.activities new <name> --kind rule|model` scaffolds a new one.
+
+Today *fighting* is a trained model; *loitering*, *unauthorised access*, *theft* and *crowding* are rules (crowding was added through the registry as the example). A rule can become a trained model later without changing the rest of the pipeline ([ACTIVITIES.md](ACTIVITIES.md)).
 
 ## 8. Deployment targets
 
@@ -151,4 +153,4 @@ Compose profiles keep memory use manageable (`core`, `streaming`, `mlops`, `moni
 | 6 | Monitoring: Prometheus, Grafana, Alertmanager, kafka-exporter, metrics in every service, drift monitor (data / prediction / concept drift), drift → retraining requests | ✅ |
 | 7 | Automated retraining with Airflow, feedback labels, champion/challenger | ✅ |
 | 8 | CD: image publishing, deployment, model rollout | ✅ |
-| 9 | Activity plugin framework, final docs and demo | ⬜ |
+| 9 | Activity plugin framework (registry, plugins, per-activity serving / retraining / dashboards, scaffold, CI check), demo kit, final docs | ✅ |

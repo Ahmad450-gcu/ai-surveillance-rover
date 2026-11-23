@@ -208,6 +208,17 @@ def quality_batch(df, batch_id):
 _DETECTOR = None
 
 
+def stream_activities():
+    """Activities marked stream: true in activities.yaml. One without a scorer here is reported, not scored: the
+    edge detector keeps scoring it (rover_ai.streaming.FramePublisher only hands over what the stream scores)."""
+    from rover_ai import activities
+    names = [a.name for a in activities.load().values() if a.stream]
+    for name in names:
+        if name not in activities.STREAM_SCORERS:
+            log.warning("activity %s is marked stream: true but this job has no scorer for it", name)
+    return [n for n in names if n in activities.STREAM_SCORERS]
+
+
 def detector():
     """One fight detector per Python worker, its model behind the serving API (always the @champion)."""
     global _DETECTOR
@@ -319,6 +330,8 @@ def main():
     with pg_connect() as conn:
         conn.execute(PREDICTIONS_DDL)
     metrics()                                    # start the metrics endpoint now, not at the first batch
+    streamed = stream_activities()
+    log.info("activities scored on the stream (activities.yaml stream: true): %s", ", ".join(streamed) or "none")
 
     spark = (SparkSession.builder.appName("rover-stream")
              .config("spark.sql.shuffle.partitions", os.environ.get("SHUFFLE_PARTITIONS", "2"))   # = state partitions

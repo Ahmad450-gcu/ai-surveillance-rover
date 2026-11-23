@@ -24,6 +24,7 @@ COPY streaming/requirements.txt streaming/requirements.txt
 RUN pip3 install -r streaming/requirements.txt
 
 # only the light parts of the project: feature code, tracks, model client (no PyTorch / OpenCV / YOLO)
+COPY activities.yaml ./
 COPY rover_ai/ rover_ai/
 COPY mlops/__init__.py mlops/lake.py mlops/
 COPY streaming/ streaming/

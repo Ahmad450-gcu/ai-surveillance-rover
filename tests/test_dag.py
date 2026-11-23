@@ -42,3 +42,15 @@ def test_schedule_and_safety(dag):
     for stage in ("feedback", "features", "train", "drift_reference"):     # stages run in the training venv (torch)
         assert dag.get_task(stage).bash_command.startswith("export PATH=/opt/trainer/bin:"), stage
     assert all(t.on_failure_callback for t in dag.tasks)          # a failed step marks the requests failed
+
+
+def test_one_dag_per_retrained_activity():
+    from rover_ai import activities
+    bag = DagBag(dag_folder=str(DAGS), include_examples=False)
+    want = {a.retraining.dag for a in activities.retrained()}
+    assert want and want <= set(bag.dag_ids)
+    for a in activities.retrained():
+        d = bag.get_dag(a.retraining.dag)
+        assert a.name in d.tags
+        assert f"repro --single-item {a.model.train_stage}" in d.get_task("train").bash_command
+        assert d.get_task("promote") and d.get_task("finish")

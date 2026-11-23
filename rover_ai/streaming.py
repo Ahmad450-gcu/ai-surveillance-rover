@@ -49,6 +49,7 @@ class FramePublisher:
         self.camera_id = camera_id
         self.session = uuid.uuid4().hex[:12]
         self.fight_on_server = cfg.get("fight_on_server", True)
+        self._streamed = None
         self.healthy = False
         self.sent = self.failed = 0
         self._all_down = KafkaError._ALL_BROKERS_DOWN
@@ -96,6 +97,16 @@ class FramePublisher:
     @property
     def server_scores_fights(self):
         return self.fight_on_server and self.healthy
+
+    @property
+    def server_scored(self):
+        """Activities the stream scores right now (activities.yaml: stream: true); this computer skips them."""
+        if not self.server_scores_fights:
+            return frozenset()
+        if self._streamed is None:
+            from .activities import load
+            self._streamed = frozenset(a.name for a in load().values() if a.stream)
+        return self._streamed
 
     def close(self, timeout=5):
         self.producer.flush(timeout)

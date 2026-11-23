@@ -258,3 +258,11 @@ def test_challenger_is_scored_in_shadow_but_never_answers(tmp_path):
         reg.champion, reg.challenger = "2", "9"                         # broken challenger: champion unaffected
         client.post("/admin/reload")
         assert client.post("/v1/models/fight/predict", json={"instances": x.tolist()}).json()["model_version"] == "2"
+
+
+def test_served_models_default_to_the_model_activities_of_the_registry(monkeypatch):
+    from serving import app as serving_app
+    assert serving_app.default_models() == {"fight": "fight-detector"}
+    monkeypatch.setenv("SERVING_MODELS", "fight=fight-detector,theft=theft-detector")
+    assert serving_app.parse_models("fight=fight-detector,theft=theft-detector") == {
+        "fight": "fight-detector", "theft": "theft-detector"}
