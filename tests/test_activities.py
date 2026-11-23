@@ -107,7 +107,8 @@ def test_access_waits_for_a_parked_camera_and_fight_for_the_stream():
     fight = FightPlugin(fcfg, cfg, ROOT)
     fight.name = "fight"
     fight.detector = SimpleNamespace(update=lambda *a: (["judged"], {7: 1.0}))
-    assert fight.update(FrameContext(tracks=[], t=0, server_scored=frozenset({"fight"}))) == []
+    ctx = FrameContext(tracks=[], t=0, server_scored=frozenset({"fight"}))
+    assert fight.update(ctx) == [] and ctx.energy == {7: 1.0}         # no alert (the stream raises it), still drawn
     ctx = FrameContext(tracks=[], t=0)
     assert fight.update(ctx) == ["judged"] and ctx.energy == {7: 1.0}
 

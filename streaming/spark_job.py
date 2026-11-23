@@ -335,6 +335,8 @@ def main():
 
     spark = (SparkSession.builder.appName("rover-stream")
              .config("spark.sql.shuffle.partitions", os.environ.get("SHUFFLE_PARTITIONS", "2"))   # = state partitions
+             # alert times in the cameras' local time, like the alerts raised by the edge (container clock is UTC)
+             .config("spark.sql.session.timeZone", os.environ.get("ALERT_TIMEZONE") or "UTC")
              .config("spark.sql.streaming.stateStore.stateSchemaCheck", "true")
              # Spark's own metrics for Prometheus: http://spark:4040/metrics/prometheus/ (stable names: namespace)
              .config("spark.ui.prometheus.enabled", "true")

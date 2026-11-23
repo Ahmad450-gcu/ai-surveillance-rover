@@ -261,6 +261,7 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
       MAX_LAG_SECONDS: ${STREAM_MAX_LAG_SECONDS:-300}
+      ALERT_TIMEZONE: ${ALERT_TIMEZONE:-Asia/Karachi}   # stream alert times in local time, like the edge's alerts
       METRICS_PORT: 9101
     volumes:
       - sparkcheckpoints:/checkpoints          # Kafka offsets + scoring state: a restart continues where it stopped

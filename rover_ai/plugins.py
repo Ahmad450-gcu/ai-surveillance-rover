@@ -126,12 +126,11 @@ class FightPlugin(ActivityPlugin):
         self.detector = make_fight_detector(cfg, root)
 
     def update(self, ctx):
-        # with streaming, the stream judges fights; this computer does it only while Kafka is unreachable
-        if self.name in ctx.server_scored:
-            return []
+        # The fighters are always judged here, so the window marks them (red FIGHT label). The ALERT comes from the
+        # stream while Kafka is reachable (dashboard, "[stream]"); this computer raises it only when Kafka is down.
         events, energy = self.detector.update(ctx.tracks, ctx.t, ctx.flags)
         ctx.energy.update(energy)
-        return events
+        return [] if self.name in ctx.server_scored else events
 
     def static(self, persons, zones, shape, flags):
         from .fight import static_fight
