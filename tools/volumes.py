@@ -66,7 +66,9 @@ def restore(folder, force):
         if exists(n) and not is_empty(n) and not force:
             print(f"  skip {volume(n)}: it already holds data (use --force to overwrite it)")
             continue
-        sh("docker", "volume", "create", volume(n), capture=True)
+        # with Compose's labels, so `docker compose up` treats it as its own volume (no "not created by Compose" warning)
+        sh("docker", "volume", "create", "--label", f"com.docker.compose.project={PROJECT}",
+           "--label", f"com.docker.compose.volume={n}", volume(n), capture=True)
         print(f"  {f.name} -> {volume(n)}")
         sh("docker", "run", "--rm", "-v", f"{volume(n)}:/v", "-v", f"{folder.resolve()}:/b:ro", IMAGE, "sh", "-c",
            f"rm -rf /v/..?* /v/.[!.]* /v/* && tar xzf /b/{f.name} -C /v")
