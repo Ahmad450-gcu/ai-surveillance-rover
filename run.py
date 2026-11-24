@@ -149,6 +149,7 @@ def run_stream(source, cfg, args, controller=None):
                 else "fights scored here" + ("" if publisher.fight_on_server else " (fight_on_server: false)"))
         print(f"Streaming: frames -> Kafka {cfg['streaming']['bootstrap']} topic {publisher.topic} "
               f"as camera {publisher.camera_id!r}, session {publisher.session}; {role}")
+        alerts.camera = publisher.camera_id
 
     backend = live_view = None
     if cfg["backend"]["url"]:
@@ -184,6 +185,8 @@ def run_stream(source, cfg, args, controller=None):
             persons, items, fresh = detector(frame)
             if publisher:
                 publisher.publish(frame_idx, t, frame.shape, persons, items)
+                # where this frame is in the stream: the photo + clip of a stream-scored alert point here
+                alerts.stream_ref = f"stream://{publisher.camera_id}/{publisher.session}/{frame_idx}"
             people.update(persons, t)
             tracks = people.visible(t)
             n_people = len(tracks)

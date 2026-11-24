@@ -58,6 +58,23 @@ alerts = Table(
     Index("alerts_type", "type"),
 )
 
+alert_media = Table(
+    # photo + clip that the laptop saved for an alert the STREAM raises (it only has skeletons, no pictures).
+    # Matched to that alert by camera, session and nearest frame, whichever of the two arrives first.
+    "alert_media", metadata,
+    Column("id", Integer, primary_key=True),
+    Column("type", String(32), nullable=False),
+    Column("camera", String(64), nullable=False),
+    Column("session", String(64), nullable=False),
+    Column("frame", Integer, nullable=False),
+    Column("track_ids", JsonType, nullable=False, default=list),
+    Column("snapshot", Text),
+    Column("clip", Text),
+    Column("alert_id", Integer),                         # the stream alert it was attached to (null: not yet)
+    Column("received", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Index("alert_media_session", "camera", "session"),
+)
+
 telemetry = Table(
     "telemetry", metadata,
     Column("id", Integer, primary_key=True),

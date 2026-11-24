@@ -10,7 +10,7 @@ carries everything a detector may look at: people tracks, objects, zones, time, 
 (drawn next to the person on screen).
 """
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from .events import Event
 
@@ -127,10 +127,13 @@ class FightPlugin(ActivityPlugin):
 
     def update(self, ctx):
         # The fighters are always judged here, so the window marks them (red FIGHT label). The ALERT comes from the
-        # stream while Kafka is reachable (dashboard, "[stream]"); this computer raises it only when Kafka is down.
+        # stream while Kafka is reachable (dashboard, "[stream]"): then this computer only saves the photo + clip of
+        # the moment and the backend attaches them to the stream's alert. It raises the alert itself when Kafka is down.
         events, energy = self.detector.update(ctx.tracks, ctx.t, ctx.flags)
         ctx.energy.update(energy)
-        return [] if self.name in ctx.server_scored else events
+        if self.name in ctx.server_scored:
+            return [replace(e, attach=True) for e in events]
+        return events
 
     def static(self, persons, zones, shape, flags):
         from .fight import static_fight

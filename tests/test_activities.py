@@ -5,10 +5,12 @@ import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import yaml
 
 from rover_ai import activities
+from rover_ai.events import Event
 from rover_ai.plugins import (
     AccessPlugin,
     ActivityPlugin,
@@ -106,11 +108,28 @@ def test_access_waits_for_a_parked_camera_and_fight_for_the_stream():
     fcfg = dict(cfg["fight"], method="rules")
     fight = FightPlugin(fcfg, cfg, ROOT)
     fight.name = "fight"
-    fight.detector = SimpleNamespace(update=lambda *a: (["judged"], {7: 1.0}))
+    judged = Event("fight", "fight-1-2", "FIGHT: ID 1 and ID 2", [1, 2])
+    fight.detector = SimpleNamespace(update=lambda *a: ([judged], {7: 1.0}))
     ctx = FrameContext(tracks=[], t=0, server_scored=frozenset({"fight"}))
-    assert fight.update(ctx) == [] and ctx.energy == {7: 1.0}         # no alert (the stream raises it), still drawn
+    out = fight.update(ctx)                     # the stream raises the alert: here only its photo + clip
+    assert [e.attach for e in out] == [True] and ctx.energy == {7: 1.0}
     ctx = FrameContext(tracks=[], t=0)
-    assert fight.update(ctx) == ["judged"] and ctx.energy == {7: 1.0}
+    assert fight.update(ctx) == [judged] and not judged.attach and ctx.energy == {7: 1.0}
+
+
+def test_stream_scored_alert_saves_only_evidence(tmp_path):
+    from rover_ai.alerts import AlertManager
+    am = AlertManager({"dir": "alerts", "cooldown_seconds": 10, "clip_seconds": 4, "sound": False}, tmp_path)
+    sent = []
+    am.listeners.append(sent.append)
+    frame = np.zeros((48, 64, 3), np.uint8)
+    am.push_frame(frame, 0.0)
+    ev = Event("fight", "fight-1-2", "FIGHT: ID 1 and ID 2", [1, 2], attach=True)
+    assert am.handle(ev, frame, 1.0) is False and sent == []             # not streaming: nothing to attach to
+    am.camera, am.stream_ref = "pi-cam", "stream://pi-cam/abc123/42"
+    assert am.handle(ev, frame, 20.0) is False                            # no alert of its own (no banner, no stop)
+    assert sent[0]["attach"] and sent[0]["evidence"] == "stream://pi-cam/abc123/42"
+    assert sent[0]["rover_id"] == "pi-cam" and (am.dir / sent[0]["snapshot"]).exists() and am.banner() == []
 
 
 @pytest.fixture()

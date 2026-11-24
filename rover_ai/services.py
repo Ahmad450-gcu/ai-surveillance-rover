@@ -131,7 +131,14 @@ class BackendLink:
     def _sender(self):
         while True:
             record = self.outbox.get()
-            while self._call("POST", "/api/device/alerts", record) is None:
+            # an alert, or the photo + clip of an alert the stream raises (the backend attaches them to it)
+            media = bool(record.get("attach"))
+            path = "/api/device/alerts/media" if media else "/api/device/alerts"
+            tries = 0
+            while self._call("POST", path, record) is None:
+                tries += 1
+                if media and tries >= 5:      # extra evidence only: never hold up the alerts behind it
+                    break
                 time.sleep(3.0)       # backend down: keep the alert and retry
 
     def _status_loop(self):

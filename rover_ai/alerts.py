@@ -27,6 +27,8 @@ class AlertManager:
         self.last = {}
         self.recent = deque(maxlen=5)       # (wall time, message) for the on-screen banner
         self.buffer = deque(maxlen=int(self.clip_seconds * 30) + 1)
+        self.camera = None                  # with streaming: this camera's id in Kafka / the backend
+        self.stream_ref = None              # ... and the current frame there: stream://<camera>/<session>/<frame>
 
     def push_frame(self, frame, t):
         self.buffer.append((t, frame))
@@ -40,8 +42,12 @@ class AlertManager:
             return False                    # same kind of incident just reported (e.g. 3 people fighting = 1 alert)
         self.last[event.key] = t
         self.last_type[event.kind] = t
+        attach = getattr(event, "attach", False)
+        if attach and not self.stream_ref:
+            return False                    # nothing to attach the evidence to
         now = time.time()
-        self.recent.append((now, event.message))
+        if not attach:
+            self.recent.append((now, event.message))
 
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         day = self.dir / stamp[:8]
@@ -53,24 +59,32 @@ class AlertManager:
             "type": event.kind,
             "message": event.message,
             "track_ids": event.track_ids,
-            "snapshot": str(Path(f"{base}.jpg").relative_to(self.dir)),
+            "snapshot": Path(f"{base}.jpg").relative_to(self.dir).as_posix(),     # "/" also on Windows (served by Linux)
         }
         if t < 1e8:                       # video file: t is the position in the video (live: t is the clock)
             record["video_time"] = round(t, 1)
+        if self.camera:
+            record["rover_id"] = self.camera
+        if attach:                        # evidence for the stream's alert of this moment (the backend matches them)
+            record["attach"] = True
+            record["evidence"] = self.stream_ref
         if save_clip and len(self.buffer) > 1:
             frames = [(ft, f) for ft, f in self.buffer if ft >= t - self.clip_seconds]
-            record["clip"] = str(Path(f"{base}.mp4").relative_to(self.dir))
+            record["clip"] = Path(f"{base}.mp4").relative_to(self.dir).as_posix()
             threading.Thread(target=_write_clip, args=(f"{base}.mp4", frames), daemon=True).start()
         with self.log.open("a") as f:
             f.write(json.dumps(record) + "\n")
 
         at = f" (video {record['video_time']:.1f}s)" if "video_time" in record else ""
-        print(f"[ALERT] {record['time']}{at}  {event.message}")
-        if self.sound:
-            subprocess.Popen(["afplay", SOUND], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if attach:
+            print(f"[photo] {record['time']}{at}  photo + clip for the stream's alert: {event.message}")
+        else:
+            print(f"[ALERT] {record['time']}{at}  {event.message}")
+            if self.sound:
+                subprocess.Popen(["afplay", SOUND], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         for listener in self.listeners:
             listener(record)
-        return True
+        return not attach
 
     def banner(self, seconds=6.0):
         now = time.time()

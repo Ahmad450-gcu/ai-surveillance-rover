@@ -125,3 +125,44 @@ def test_activities_come_from_the_registry(client):
     acts = client.get("/api/activities").json()
     assert [a["name"] for a in acts] == ["loitering", "access", "fight", "theft", "crowding"]
     assert {a["alert_type"]: a["kind"] for a in acts}["fight"] == "model"
+
+
+def test_stream_alert_gets_the_laptops_photo_in_either_order(client):
+    auth = login(client)
+    stream = {"time": "2026-11-24T10:00:00", "type": "fight", "message": "FIGHT: ID 1 and ID 2 (80%) [stream]",
+              "track_ids": [1, 2], "rover_id": "pi-cam"}
+    media = {"time": "2026-11-24T10:00:01", "type": "fight", "message": "FIGHT: ID 1 and ID 2 (79%)",
+             "track_ids": [1, 2], "attach": True}
+
+    # the stream's alert first, the laptop's photo + clip a moment later (2 frames apart)
+    a = client.post("/api/device/alerts", json={**stream, "evidence": "stream://pi-cam/s1/100"}, headers=DEVICE)
+    r = client.post("/api/device/alerts/media", headers=DEVICE, json={
+        **media, "evidence": "stream://pi-cam/s1/102", "snapshot": "d/a.jpg", "clip": "d/a.mp4"})
+    assert r.json() == {"attached_to": a.json()["id"]}
+
+    # the photo first: it waits, and the stream's alert picks it up when it arrives
+    r = client.post("/api/device/alerts/media", headers=DEVICE, json={
+        **media, "evidence": "stream://pi-cam/s1/400", "snapshot": "d/b.jpg", "clip": "d/b.mp4"})
+    assert r.json() == {"attached_to": None}
+    b = client.post("/api/device/alerts", json={**stream, "evidence": "stream://pi-cam/s1/398"}, headers=DEVICE)
+
+    # too far away (another moment) or another session: nothing attached
+    c = client.post("/api/device/alerts", json={**stream, "evidence": "stream://pi-cam/s1/900"}, headers=DEVICE)
+    d = client.post("/api/device/alerts", json={**stream, "evidence": "stream://pi-cam/s2/400"}, headers=DEVICE)
+
+    got = {x["id"]: (x["snapshot"], x["clip"]) for x in client.get("/api/alerts", headers=auth).json()}
+    assert got[a.json()["id"]] == ("d/a.jpg", "d/a.mp4")
+    assert got[b.json()["id"]] == ("d/b.jpg", "d/b.mp4")
+    assert got[c.json()["id"]] == (None, None) and got[d.json()["id"]] == (None, None)
+    assert client.post("/api/device/alerts/media", json={**media, "evidence": "nope"}, headers=DEVICE).status_code == 400
+
+
+def test_media_paths_with_windows_separators_are_served(client, tmp_path, monkeypatch):
+    import backend.app as app_module
+    monkeypatch.setattr(app_module, "ALERTS_DIR", tmp_path.resolve())
+    (tmp_path / "20261124").mkdir()
+    (tmp_path / "20261124" / "a.jpg").write_bytes(b"jpg")
+    token = login(client)["Authorization"].split()[1]
+    assert client.get("/media/20261124/a.jpg", params={"token": token}).content == b"jpg"
+    assert client.get("/media/20261124%5Ca.jpg", params={"token": token}).content == b"jpg"   # "\" from Windows
+    assert client.get("/media/../secret", params={"token": token}).status_code == 404

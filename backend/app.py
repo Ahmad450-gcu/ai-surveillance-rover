@@ -26,7 +26,7 @@ from pydantic import BaseModel
 from sqlalchemy import case, func, insert, select, text, update
 from sqlalchemy.exc import IntegrityError
 
-from backend.db import alerts, commands, make_engine, telemetry, users
+from backend.db import alert_media, alerts, commands, make_engine, telemetry, users
 from backend.metrics import (
     ALERTS_IN,
     ALERTS_LABELLED,
@@ -260,7 +260,7 @@ def label_alert(alert_id: int, body: Label, user=Depends(current_user)):
 
 @app.get("/media/{path:path}")
 def media(path: str, user=Depends(current_user)):
-    file = (ALERTS_DIR / path).resolve()
+    file = (ALERTS_DIR / path.replace("\\", "/")).resolve()      # older alerts from Windows used "\"
     if not file.is_relative_to(ALERTS_DIR) or not file.is_file():
         raise HTTPException(404, "Not found")
     return FileResponse(file)
@@ -286,12 +286,69 @@ def command(body: Command, user=Depends(current_user)):
 
 
 # ---------------- device (detector) side ----------------
+MATCH_FRAMES = 50          # the laptop and the stream raise the same alert within a few frames (50 = 5 s at 10 fps)
+
+
+def stream_ref(evidence):
+    """stream://<camera>/<session>/<frame> -> (camera, session, frame), or None."""
+    if not evidence or not evidence.startswith("stream://"):
+        return None
+    try:
+        camera, session, frame = evidence[len("stream://"):].rsplit("/", 2)
+        return camera, session, int(frame)
+    except ValueError:
+        return None
+
+
+def closest(candidates, frame):
+    """(id, frame) pairs -> the id nearest to `frame` within MATCH_FRAMES, or None."""
+    near = [(abs(f - frame), i) for i, f in candidates if abs(f - frame) <= MATCH_FRAMES]
+    return min(near)[1] if near else None
+
+
 @app.post("/api/device/alerts", dependencies=[Depends(device)])
 def device_alert(body: AlertIn):
+    values = body.model_dump()
+    ref = stream_ref(body.evidence) if not body.snapshot else None
     with engine.begin() as conn:
-        alert_id = conn.execute(insert(alerts).values(**body.model_dump()).returning(alerts.c.id)).scalar_one()
+        media = None
+        if ref:                                          # a stream alert: did the laptop already send its pictures?
+            camera, session, frame = ref
+            waiting = conn.execute(select(alert_media.c.id, alert_media.c.frame, alert_media.c.snapshot,
+                                          alert_media.c.clip).where(
+                alert_media.c.camera == camera, alert_media.c.session == session,
+                alert_media.c.type == body.type, alert_media.c.alert_id.is_(None))).all()
+            media = closest([(m.id, m.frame) for m in waiting], frame)
+            if media:
+                m = next(m for m in waiting if m.id == media)
+                values.update(snapshot=m.snapshot, clip=m.clip)
+        alert_id = conn.execute(insert(alerts).values(**values).returning(alerts.c.id)).scalar_one()
+        if media:
+            conn.execute(update(alert_media).where(alert_media.c.id == media).values(alert_id=alert_id))
     ALERTS_IN.labels(body.type, "stream" if body.message.endswith("[stream]") else "edge").inc()
     return {"id": alert_id}
+
+
+@app.post("/api/device/alerts/media", dependencies=[Depends(device)])
+def device_alert_media(body: AlertIn):
+    """Photo + clip from the laptop for an alert the stream raises: attached to it now, or when it arrives."""
+    ref = stream_ref(body.evidence)
+    if not ref:
+        raise HTTPException(400, "evidence must be stream://<camera>/<session>/<frame>")
+    camera, session, frame = ref
+    with engine.begin() as conn:
+        prefix = f"stream://{camera}/{session}/"
+        candidates = [(a.id, stream_ref(a.evidence)[2]) for a in conn.execute(
+            select(alerts.c.id, alerts.c.evidence).where(
+                alerts.c.type == body.type, alerts.c.snapshot.is_(None), alerts.c.evidence.like(prefix + "%"))).all()
+            if stream_ref(a.evidence) and stream_ref(a.evidence)[:2] == (camera, session)]
+        alert_id = closest(candidates, frame)
+        if alert_id:
+            conn.execute(update(alerts).where(alerts.c.id == alert_id).values(snapshot=body.snapshot, clip=body.clip))
+        conn.execute(insert(alert_media).values(type=body.type, camera=camera, session=session, frame=frame,
+                                                track_ids=body.track_ids, snapshot=body.snapshot, clip=body.clip,
+                                                alert_id=alert_id))
+    return {"attached_to": alert_id}
 
 
 @app.post("/api/device/status", dependencies=[Depends(device)])

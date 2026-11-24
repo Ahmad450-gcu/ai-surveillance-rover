@@ -7,3 +7,4 @@ class Event:
     key: str                        # used for de-duplication / cooldown
     message: str
     track_ids: list = field(default_factory=list)
+    attach: bool = False            # the stream raises this alert: only save its photo + clip and attach them to it
