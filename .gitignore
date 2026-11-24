@@ -43,3 +43,6 @@ deploy/aws/.terraform.lock.hcl
 *.tfstate
 *.tfstate.*
 deploy/aws/terraform.tfvars
+
+# personal list of addresses and logins (never committed)
+MY_LOGINS.txt
