@@ -266,6 +266,32 @@ def media(path: str, user=Depends(current_user)):
     return FileResponse(file)
 
 
+MEDIA_TYPES = (".jpg", ".mp4")
+MAX_MEDIA = 30 * 1024 * 1024
+
+
+@app.put("/api/device/media/{path:path}", dependencies=[Depends(device)])
+async def upload_media(path: str, request: Request):
+    """A photo or clip from a detector on another computer (backend.upload_media), stored where /media serves it."""
+    file = (ALERTS_DIR / path.replace("\\", "/")).resolve()
+    if not file.is_relative_to(ALERTS_DIR) or file.suffix.lower() not in MEDIA_TYPES:
+        raise HTTPException(400, "only .jpg and .mp4 files inside the alerts folder")
+    file.parent.mkdir(parents=True, exist_ok=True)
+    part = file.with_name(f"{file.name}.{secrets.token_hex(4)}.part")
+    size = 0
+    try:
+        with part.open("wb") as f:
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > MAX_MEDIA:
+                    raise HTTPException(413, "file too large")
+                f.write(chunk)
+        part.replace(file)                          # never serve a half-received file
+    finally:
+        part.unlink(missing_ok=True)
+    return {"ok": True, "bytes": size}
+
+
 # ---------------- rover status & commands ----------------
 @app.get("/api/status")
 def status(user=Depends(current_user)):

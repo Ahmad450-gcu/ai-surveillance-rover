@@ -102,8 +102,11 @@ class LiveView:
 class BackendLink:
     """Fire-and-forget calls to the backend; detection never waits on the network."""
 
-    def __init__(self, url, device_token):
+    def __init__(self, url, device_token, media_dir=None):
+        """media_dir: the alerts folder, if the backend is on another computer and needs the photos and clips sent."""
         self.url = url.rstrip("/")
+        self.media_dir = media_dir
+        self.uploads = queue.Queue(maxsize=200)
         self.headers = {"X-Device-Token": device_token}
         self.outbox = queue.Queue(maxsize=200)
         self.commands = queue.Queue()
@@ -111,6 +114,8 @@ class BackendLink:
         self.online = False
         threading.Thread(target=self._sender, daemon=True).start()
         threading.Thread(target=self._status_loop, daemon=True).start()
+        if media_dir:
+            threading.Thread(target=self._uploader, daemon=True).start()
 
     def post_alert(self, record):
         try:
@@ -140,6 +145,34 @@ class BackendLink:
                 if media and tries >= 5:      # extra evidence only: never hold up the alerts behind it
                     break
                 time.sleep(3.0)       # backend down: keep the alert and retry
+            for name in (record.get("snapshot"), record.get("clip")):
+                if name and self.media_dir:
+                    try:
+                        self.uploads.put_nowait((name, time.time()))
+                    except queue.Full:
+                        pass
+
+    def _uploader(self):
+        while True:
+            name, since = self.uploads.get()
+            path = self.media_dir / name
+            while not path.exists() and time.time() - since < 60:      # the clip is still being written
+                time.sleep(0.5)
+            if path.exists() and not self.upload(name):
+                print(f"[backend] could not send {name}")
+
+    def upload(self, name, tries=5):
+        data = (self.media_dir / name).read_bytes()
+        for n in range(tries):
+            try:
+                r = requests.put(f"{self.url}/api/device/media/{name}", data=data, headers=self.headers, timeout=60)
+                if r.status_code < 500:
+                    return r.ok
+            except requests.RequestException:
+                pass
+            if n < tries - 1:
+                time.sleep(3.0)
+        return False
 
     def _status_loop(self):
         while True:

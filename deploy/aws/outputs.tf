@@ -3,17 +3,25 @@ output "public_ip" {
   value       = aws_eip.rover.public_ip
 }
 
+output "instance_id" {
+  description = "The server (tools/aws.py start / stop / status)"
+  value       = aws_instance.rover.id
+}
+
+output "region" {
+  value = var.region
+}
+
 output "dashboard" {
   value = "http://${aws_eip.rover.public_ip}:8080"
 }
 
 output "next_steps" {
   value = <<-EOT
-    1. ssh ubuntu@${aws_eip.rover.public_ip}   (cloud-init needs ~3 min: cloud-init status --wait)
-    2. cd /opt/rover && cp .env.example .env && nano .env
-       (passwords, IMAGE_PREFIX=ghcr.io/<owner>/rover, COMPOSE_PROFILES=mlops or monitoring)
-    3. GitHub -> Settings -> Variables: DEPLOY_TARGET=ec2, EC2_HOST=${aws_eip.rover.public_ip};
-       Secrets: EC2_SSH_KEY = the key pair's private key
-    4. Actions -> CD -> Run workflow (or push to main): deploys, smoke-tests, rolls back on failure
+    1. python tools/aws.py deploy       installs the latest published release and tests it (~10 min)
+    2. python tools/aws.py copy-data    this computer's alerts, models and training data (Docker must run here)
+    3. python tools/aws.py tunnel       every service on localhost
+    Automatic deployments: GitHub -> Settings -> Variables: DEPLOY_TARGET=ec2, EC2_HOST=${aws_eip.rover.public_ip};
+    Secrets: EC2_SSH_KEY = the private key (~/.ssh/rover_aws)
   EOT
 }

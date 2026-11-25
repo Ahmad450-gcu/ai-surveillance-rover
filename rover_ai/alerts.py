@@ -1,5 +1,6 @@
 """Alert handling: cooldown, snapshot + pre-event clip, JSON log, sound, and listeners (e.g. the backend)."""
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -94,13 +95,15 @@ class AlertManager:
 def _write_clip(path, frames):
     if len(frames) < 2:
         return
+    part = path[:-len(".mp4")] + ".part.mp4"          # appears under its real name only when it is complete
     span = frames[-1][0] - frames[0][0]
     fps = max(1.0, (len(frames) - 1) / span) if span > 0 else 10.0
     h, w = frames[0][1].shape[:2]
     # H.264 plays in browsers and on Android; fall back to MPEG-4 if this OpenCV build can't encode it
-    out = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"avc1"), fps, (w, h))
+    out = cv2.VideoWriter(part, cv2.VideoWriter_fourcc(*"avc1"), fps, (w, h))
     if not out.isOpened():
-        out = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
+        out = cv2.VideoWriter(part, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h))
     for _, f in frames:
         out.write(f)
     out.release()
+    os.replace(part, path)

@@ -166,3 +166,60 @@ def test_media_paths_with_windows_separators_are_served(client, tmp_path, monkey
     assert client.get("/media/20261124/a.jpg", params={"token": token}).content == b"jpg"
     assert client.get("/media/20261124%5Ca.jpg", params={"token": token}).content == b"jpg"   # "\" from Windows
     assert client.get("/media/../secret", params={"token": token}).status_code == 404
+
+
+def test_a_detector_on_another_computer_uploads_photos(client, tmp_path, monkeypatch):
+    import backend.app as app_module
+    folder = tmp_path / "alerts"
+    folder.mkdir()
+    monkeypatch.setattr(app_module, "ALERTS_DIR", folder.resolve())
+    url = "/api/device/media/20261124/a.jpg"
+    assert client.put(url, content=b"jpg").status_code == 401                                   # no device token
+    assert client.put(url, content=b"jpg", headers=DEVICE).json() == {"ok": True, "bytes": 3}
+    token = login(client)["Authorization"].split()[1]
+    assert client.get("/media/20261124/a.jpg", params={"token": token}).content == b"jpg"
+    assert client.put("/api/device/media/a.py", content=b"x", headers=DEVICE).status_code == 400
+    assert client.put("/api/device/media/%2E%2E/x.jpg", content=b"x", headers=DEVICE).status_code in (400, 404)
+    assert client.put("/api/device/media/..%5Cx.jpg", content=b"x", headers=DEVICE).status_code == 400
+    monkeypatch.setattr(app_module, "MAX_MEDIA", 2)
+    assert client.put("/api/device/media/big.mp4", content=b"xyz", headers=DEVICE).status_code == 413
+    assert [p.name for p in folder.rglob("*") if p.is_file()] == ["a.jpg"] and not (tmp_path / "x.jpg").exists()
+
+
+def test_backend_link_sends_the_alert_then_its_files(tmp_path, monkeypatch):
+    import time
+
+    from rover_ai import services
+    calls = []
+
+    class Reply:
+        status_code, ok = 200, True
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return []
+
+    def request(method, url, **kw):
+        if "/alerts" in url:
+            calls.append((method, url.split("/api/device/")[1]))
+        return Reply()
+
+    def put(url, data, **kw):
+        calls.append(("PUT", url.split("/api/device/")[1], data))
+        return Reply()
+
+    monkeypatch.setattr(services.requests, "request", request)
+    monkeypatch.setattr(services.requests, "put", put)
+    (tmp_path / "d").mkdir()
+    (tmp_path / "d" / "a.jpg").write_bytes(b"jpg")
+    link = services.BackendLink("http://server:8080", "t", media_dir=tmp_path)
+    link.post_alert({"type": "fight", "snapshot": "d/a.jpg", "clip": "d/a.mp4"})
+    time.sleep(0.3)
+    (tmp_path / "d" / "a.mp4").write_bytes(b"mp4")                    # the clip is finished a moment later
+    for _ in range(50):
+        if len(calls) == 3:
+            break
+        time.sleep(0.1)
+    assert calls == [("POST", "alerts"), ("PUT", "media/d/a.jpg", b"jpg"), ("PUT", "media/d/a.mp4", b"mp4")]

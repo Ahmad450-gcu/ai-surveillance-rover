@@ -1,14 +1,16 @@
 # The cloud deployment target: one EC2 server that runs the same docker-compose stack as the laptop.
 #
-#   cd deploy/aws
-#   cp terraform.tfvars.example terraform.tfvars      # region, key pair, your IP
-#   terraform init && terraform apply                 # ~2 min; prints the address and the next steps
-#   terraform destroy                                 # when the demo is over (stops the cost)
+#   python tools/aws.py prepare          # SSH key and the server's passwords (once)
+#   python tools/aws.py plan             # what would be created; changes nothing
+#   python tools/aws.py apply            # asks, then creates it (~2 min)
+#   python tools/aws.py destroy          # removes everything (stops the cost)
+# (or terraform init / plan / apply in this folder with AWS credentials set)
 #
-# What it creates: a security group (SSH and the dashboard from your IP only), an Ubuntu 24.04 server with Docker
-# installed by cloud-init (cloud-init.yaml) and the project cloned to /opt/rover, a fixed public IP (Elastic IP), and
-# an encrypted disk. Credentials come from the AWS CLI / environment (AWS_PROFILE or AWS_ACCESS_KEY_ID), never
-# from files in the repository.
+# What it creates: a key pair, a security group (SSH with the key; the dashboard and Grafana from your IP only), an
+# Ubuntu 24.04 server with Docker installed by cloud-init (cloud-init.yaml) and the project cloned to /opt/rover,
+# a fixed public IP (Elastic IP), and an encrypted disk. Every other service is reached through an SSH tunnel
+# (python tools/aws.py tunnel). Credentials come from the AWS CLI ("aws login") / environment, never from files in
+# the repository.
 
 terraform {
   required_version = ">= 1.6"
@@ -16,6 +18,10 @@ terraform {
     aws = {
       source  = "hashicorp/aws"
       version = "~> 5.80"
+    }
+    http = {
+      source  = "hashicorp/http"
+      version = "~> 3.4"
     }
   }
 }
@@ -43,12 +49,29 @@ data "aws_ami" "ubuntu" {
   }
 }
 
+# The address this computer has on the internet right now: the dashboard opens only to it (and var.app_cidrs).
+# Home connections change address now and then: "python tools/aws.py apply" again updates the rule.
+data "http" "my_ip" {
+  count = var.allow_my_ip ? 1 : 0
+  url   = "https://checkip.amazonaws.com"
+}
+
+locals {
+  my_cidr   = var.allow_my_ip ? ["${chomp(data.http.my_ip[0].response_body)}/32"] : []
+  app_cidrs = distinct(concat(local.my_cidr, var.app_cidrs))
+}
+
+resource "aws_key_pair" "rover" {
+  key_name   = "${var.name}-key"
+  public_key = file(pathexpand(var.public_key_file))
+}
+
 resource "aws_security_group" "rover" {
   name        = "${var.name}-sg"
-  description = "Rover stack: SSH and the dashboard from the admin address only"
+  description = "Rover stack: SSH by key, the dashboard from the admin address only"
 
   ingress {
-    description = "SSH (deployments from GitHub Actions use it too)"
+    description = "SSH, keys only (deployments from GitHub Actions use it too)"
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
@@ -56,13 +79,13 @@ resource "aws_security_group" "rover" {
   }
 
   dynamic "ingress" {
-    for_each = var.open_ports
+    for_each = length(local.app_cidrs) > 0 ? var.open_ports : []
     content {
       description = "service port ${ingress.value}"
       from_port   = ingress.value
       to_port     = ingress.value
       protocol    = "tcp"
-      cidr_blocks = var.app_cidrs
+      cidr_blocks = local.app_cidrs
     }
   }
 
@@ -78,8 +101,11 @@ resource "aws_security_group" "rover" {
 resource "aws_instance" "rover" {
   ami                    = data.aws_ami.ubuntu.id
   instance_type          = var.instance_type
-  key_name               = var.key_name
+  key_name               = aws_key_pair.rover.key_name
   vpc_security_group_ids = [aws_security_group.rover.id]
+
+  # the daily "shutdown" on the server (cloud-init.yaml) stops it: no hourly cost, the disk and its data stay
+  instance_initiated_shutdown_behavior = "stop"
 
   root_block_device {
     volume_type = "gp3"
@@ -95,8 +121,14 @@ resource "aws_instance" "rover" {
     repo_url    = var.repo_url
     deploy_user = "ubuntu"
     swap_gb     = var.swap_gb
+    timezone    = var.timezone
+    stop_at     = var.stop_at
   })
   user_data_replace_on_change = false
+
+  lifecycle {
+    ignore_changes = [ami, user_data] # a newer Ubuntu image must never replace the server (and its data)
+  }
 
   tags = {
     Name = var.name

@@ -34,8 +34,24 @@ main() {
     ""|rover) log "IMAGE_PREFIX in .env must name the published images, e.g. ghcr.io/<user>/rover"; exit 2 ;;
   esac
 
+  # A retraining on this machine leaves new versions of committed files (dvc.lock, reports/, the feedback manifest).
+  # git keeps them while the new commit doesn't change the same files; if it does, they are saved and replaced.
+  checkout() {
+    if git checkout --quiet --detach "$1" 2> "$STATE/checkout.err"; then return 0; fi
+    local keep
+    keep="$STATE/kept/$(date -u +%Y%m%dT%H%M%SZ)"
+    mkdir -p "$keep"
+    git diff --name-only -z HEAD --diff-filter=d | xargs -0 -r cp --parents -t "$keep" || return 1
+    log "local changes (a retraining's results) saved in $keep"
+    git checkout --quiet --force --detach "$1"
+  }
+
+  set_tag() {                      # plain "docker compose" commands on this machine use the deployed images too
+    if grep -q '^IMAGE_TAG=' .env; then sed -i "s/^IMAGE_TAG=.*/IMAGE_TAG=$1/" .env; else echo "IMAGE_TAG=$1" >> .env; fi
+  }
+
   release() {                      # $1 = commit: checkout + pull + up + smoke
-    git checkout --quiet --detach "$1"
+    checkout "$1" || return 10
     export IMAGE_TAG="sha-${1:0:7}"
     log "pulling images $IMAGE_TAG"
     docker compose pull --quiet || return 10
@@ -43,6 +59,7 @@ main() {
     docker compose up -d --no-build --remove-orphans --wait --wait-timeout "${DEPLOY_WAIT_SECONDS:-600}" || return 20
     log "smoke tests"
     bash deploy/smoke.sh || return 30
+    set_tag "$IMAGE_TAG"
   }
 
   git fetch --quiet origin || log "git fetch failed; using the commits already here"
@@ -60,6 +77,9 @@ main() {
     fi
     echo "$SHA" > "$STATE/current"
     record "$SHA" ok
+    # older releases' images (this project's only); this one and the previous one stay for a quick rollback
+    docker images --format '{{.Repository}}:{{.Tag}}' --filter "reference=${IMAGE_PREFIX:-$prefix}-*" \
+      | { grep -vE ":(sha-${SHA:0:7}|sha-${PREV:0:7}|latest)\$" || true; } | xargs -r docker rmi > /dev/null 2>&1 || true
     log "deployed ${SHA:0:7}"
     exit 0
   fi

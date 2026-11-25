@@ -89,29 +89,61 @@ database, lake and registry): a development `docker compose up` and a deployment
 
 ### AWS EC2
 
+One server, switched on only when it is needed. Everything goes through `tools/aws.py`:
+
 ```powershell
-cd deploy/aws
-copy terraform.tfvars.example terraform.tfvars      # region, key pair, your IP
-terraform init
-terraform apply                                     # prints the address and the next steps
+winget install Amazon.AWSCLI
+winget install Hashicorp.Terraform        # then open a new terminal
+aws login                                 # browser sign-in; short-lived credentials, no access keys on disk
+python tools/aws.py check                 # region, Free plan types, limits, dry run: creates nothing
+python tools/aws.py prepare               # SSH key + the server's own passwords (once)
+python tools/aws.py plan                  # what would be created: creates nothing
+python tools/aws.py apply                 # creates it, after asking
+python tools/aws.py deploy                # installs the latest published release and smoke-tests it
+python tools/aws.py copy-data             # this computer's alerts, users, models and training data -> the server
 ```
 
-Terraform creates the server (Ubuntu 24.04, `t3.large` with 8 GB; `t3.xlarge` for every profile at once), an encrypted
-60 GB disk, a fixed IP and a security group that opens SSH and the dashboard (8080) only to the addresses in
-`terraform.tfvars`. cloud-init installs Docker from Ubuntu's repository, adds swap and clones the project to `/opt/rover`.
-Then:
+| | Setting (`deploy/aws/variables.tf`) |
+|---|---|
+| Region | `ap-southeast-2` (Sydney). Accounts of AWS's new sign-up have one fixed region |
+| Server | `m7i-flex.large`: 2 vCPU, 8 GB, Free plan eligible; Ubuntu 24.04, 4 GB swap, encrypted 60 GB disk, fixed IP |
+| Runs | every profile: `COMPOSE_PROFILES=streaming,monitoring,mlops` |
+| Open to the internet | SSH with the key only (no passwords). The dashboard (8080) and Grafana (3000) only for the address `apply` was run from (run it again when that changes) and `app_cidrs` |
+| Everything else | SSH tunnel: `python tools/aws.py tunnel` puts each service on the same `localhost` port as the local stack |
+| Passwords | generated, different from the laptop's: `deploy/aws/server.env` (git-ignored), listed in `MY_LOGINS.txt` |
+| Daily stop | 23:30 (`stop_at`): the server shuts itself down, the data stays. Cancel once: `sudo shutdown -c` on the server |
 
-1. `ssh ubuntu@<ip>`, `cd /opt/rover && cp .env.example .env`, fill in the passwords, `IMAGE_PREFIX`, `COMPOSE_PROFILES`.
-2. Variables: `DEPLOY_TARGET=ec2`, `EC2_HOST=<ip>`; secret `EC2_SSH_KEY` = the key pair's private key.
-3. Actions → CD → Run workflow (or the next push to main).
+**Daily use:** `start`, `tunnel`, `status` (containers, memory, credits left), `stop`. The detector keeps running where the
+camera is; `run` opens the tunnel and starts it against the server:
 
-GitHub's hosted runners connect from changing addresses, so SSH must either be open to them (`ssh_cidrs =
-["0.0.0.0/0"]`; the server accepts keys only, no passwords) or, more strictly, the server runs its own
-self-hosted runner with the label `rover` and the target is `local` with `DEPLOY_DIR=/opt/rover`, so no inbound SSH
-from GitHub is needed at all. Moving between the laptop and EC2 only changes these variables: same images, same script.
+```powershell
+python tools/aws.py run -- --source pi_clip.mp4 --set streaming.camera_id=pi-cam
+```
 
-**Cost:** an on-demand `t3.large` costs roughly USD 0.08–0.10 per hour depending on the region, plus the disk, so
-about USD 2–3 per day of demo. `terraform destroy` removes everything when it is no longer needed.
+Frames go to the server's Kafka and alerts to its backend. `backend.upload_media` also sends the photos and clips
+(`PUT /api/device/media/…`, device token), because the backend can't see this computer's folder. Use the dashboard at
+`http://localhost:8080` while the detector runs: the live view comes from this computer.
+
+**What `copy-data` copies:** the databases `rover` and `mlflow`, the lake without the 12 GB video archive and the DVC
+versions, the alert photos, and the training skeletons (about 70 MB). That is all a retraining needs: it
+rebuilds the training windows from the skeletons. It replaces the server's data, and asks first. The first `dvc push` on
+the server warns about versions that exist only on the laptop; this is expected.
+
+**Automatic deployments:** GitHub → Settings → Variables `DEPLOY_TARGET=ec2`, `EC2_HOST=<ip>`; secret `EC2_SSH_KEY` = the
+content of `~/.ssh/rover_aws`. Then every push that passes CI is deployed (the server must be on). GitHub's runners connect
+from changing addresses, which is why SSH is open to all addresses (keys only). Stricter: set `ssh_cidrs`
+to your address and run a self-hosted runner with the label `rover` on the server (`DEPLOY_TARGET=local`,
+`DEPLOY_DIR=/opt/rover`). Moving between the laptop and EC2 only changes these variables: same images, same script.
+
+**A retraining changes committed files on the server** (`dvc.lock`, `reports/`). A deployment keeps them unless the new
+commit changes the same files; then they are saved in `.deploy/kept/` first. Airflow runs with the uid that owns the
+folder (`AIRFLOW_UID=1000`).
+
+**Cost (estimate, Sydney):** USD 0.12 per hour while on, plus about USD 9 a month for the disk and the fixed IP even
+while off. `destroy` removes everything, including the data.
+
+**Memory:** the 13 containers without Airflow measured 1.9 GB on the laptop, Airflow may use up to 3.3 GB, so all
+profiles should fit in 8 GB. With 2 vCPUs, streaming is expected to slow down while a model trains. Not measured on EC2 yet.
 
 ## 5. Rolling back
 
@@ -166,5 +198,7 @@ try, prediction by registry v4: **deployed in 4 min 46 s**.
   a broken challenger doesn't affect the champion.
 - `tests/test_models.py`: `seed` registers the release model once, with the artifacts serving reads and the metrics
   the promotion gate needs.
+- `tests/test_aws.py`: the server's passwords are its own, every required setting is there, the tunnel uses the
+  published ports, cloud-init is valid. `tests/test_backend.py`: photo upload (token, types, size, no path escape).
 - CI: `shellcheck` on every deployment script, `terraform fmt` + `validate` on the EC2 configuration.
 - Manual test cases TC-78 … TC-81 in [TESTING.md](TESTING.md).

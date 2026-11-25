@@ -86,4 +86,5 @@ rover:
 backend:
   url: null                         # e.g. http://localhost:8080 once the backend is running
   device_token: change-me-too       # dev default only; set ROVER__BACKEND__DEVICE_TOKEN in .env
+  upload_media: false               # true = send photos and clips too (the backend runs on another computer, e.g. AWS)
   live_view_port: 8081              # annotated live view for the dashboard / phone

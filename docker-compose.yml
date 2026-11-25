@@ -47,6 +47,7 @@ x-airflow: &airflow
     dockerfile: docker/airflow/Dockerfile
   image: ${IMAGE_PREFIX:-rover}-airflow:${IMAGE_TAG:-latest}
   profiles: ["mlops"]
+  user: "${AIRFLOW_UID:-50000}:0"           # Linux server: the uid owning the project folder (deploy/aws: 1000)
   environment: *airflow-env
   volumes:
     - .:/opt/rover                            # the project: DAGs, code, params, DVC data (cloud VM: the clone)
@@ -156,7 +157,8 @@ services:
       ROVER__BACKEND__DEVICE_TOKEN: ${ROVER__BACKEND__DEVICE_TOKEN:?set ROVER__BACKEND__DEVICE_TOKEN in .env}
       ROVER__BACKEND__JWT_SECRET: ${ROVER__BACKEND__JWT_SECRET:?set ROVER__BACKEND__JWT_SECRET in .env}
     volumes:
-      - ./alerts:/app/alerts:ro               # snapshots and clips written by the detector
+      - ./alerts:/app/alerts                  # snapshots and clips: written by the detector on this computer,
+                                              # or uploaded by one elsewhere (backend.upload_media)
     ports:
       - "${BACKEND_PORT:-8080}:8080"
     mem_limit: 256m

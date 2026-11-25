@@ -1,6 +1,8 @@
 #cloud-config
 # First boot of the rover server (rendered by Terraform: main.tf -> templatefile). Docker and Compose come from
 # Ubuntu's own package repository; the project is cloned to /opt/rover, where deploy/deploy.sh runs.
+timezone: ${timezone}
+ssh_pwauth: false
 package_update: true
 package_upgrade: true
 packages:
@@ -10,13 +12,32 @@ packages:
   - curl
   - python3
 
+write_files:
+  # stops the server every day (EC2: shutdown = stop): a forgotten server costs at most one day
+  - path: /etc/systemd/system/rover-stop.service
+    content: |
+      [Unit]
+      Description=Daily stop of the rover server (saves cost)
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/sbin/shutdown -h +5 "Daily stop in 5 minutes (keep running: sudo shutdown -c)"
+  - path: /etc/systemd/system/rover-stop.timer
+    content: |
+      [Unit]
+      Description=Daily stop of the rover server at ${stop_at}
+      [Timer]
+      OnCalendar=*-*-* ${stop_at}:00
+      [Install]
+      WantedBy=timers.target
+
 runcmd:
   - [bash, -c, "fallocate -l ${swap_gb}G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile && echo '/swapfile none swap sw 0 0' >> /etc/fstab"]
   - [bash, -c, "echo 'vm.swappiness=10' > /etc/sysctl.d/99-rover.conf && sysctl --system"]
+  - [systemctl, daemon-reload]
+  - [systemctl, enable, --now, rover-stop.timer]
   - [systemctl, enable, --now, docker]
   - [usermod, -aG, docker, "${deploy_user}"]
   - [git, clone, "${repo_url}", /opt/rover]
-  - [chown, -R, "${deploy_user}:${deploy_user}", /opt/rover]
-  - [bash, -c, "mkdir -p /opt/rover/alerts && chown ${deploy_user}: /opt/rover/alerts"]
+  - [bash, -c, "mkdir -p /opt/rover/alerts /opt/rover/data && chown -R ${deploy_user}:${deploy_user} /opt/rover"]
 
 final_message: "rover server ready after $UPTIME s: create /opt/rover/.env, then deploy (docs/DEPLOYMENT.md)"

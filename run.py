@@ -154,7 +154,8 @@ def run_stream(source, cfg, args, controller=None):
     backend = live_view = None
     if cfg["backend"]["url"]:
         from rover_ai.services import BackendLink, LiveView
-        backend = BackendLink(cfg["backend"]["url"], cfg["backend"]["device_token"])
+        backend = BackendLink(cfg["backend"]["url"], cfg["backend"]["device_token"],
+                              media_dir=alerts.dir if cfg["backend"]["upload_media"] else None)
         alerts.listeners.append(backend.post_alert)
         live_view = LiveView(cfg["backend"]["live_view_port"])
         print(f"Live view on port {cfg['backend']['live_view_port']}, sending alerts to {cfg['backend']['url']}")
