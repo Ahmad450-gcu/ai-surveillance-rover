@@ -315,7 +315,8 @@ def deploy(args):
     if ssh(f"test -f {REMOTE}/.env", check=False).returncode:         # never replaced: the databases keep its passwords
         stack = "".join(f"{k}={v}\n" for k, v in read_env(ENV_FILE).items() if k != "DASHBOARD_PASSWORD")
         ssh(f"umask 077 && cat > {REMOTE}/.env", input=stack.encode())
-    ssh(f"cd {REMOTE} && git fetch --quiet origin && DEPLOY_WAIT_SECONDS=1200 bash deploy/deploy.sh {sha}")
+    ssh(f"cd {REMOTE} && git fetch --quiet origin && {{ git checkout --quiet --detach {sha} || true; }} && "
+        f"DEPLOY_WAIT_SECONDS=1200 bash deploy/deploy.sh {sha}")
     set_admin_password(read_env(ENV_FILE)["DASHBOARD_PASSWORD"])
     print(f"\nDashboard: {outputs()['dashboard']}   (login: MY_LOGINS.txt)\nEverything: python tools/aws.py tunnel")
     return 0

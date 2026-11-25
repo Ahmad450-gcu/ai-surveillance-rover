@@ -180,7 +180,7 @@ def seed(src="models/release", name=None):
         version = register(mlflow, client, Path(tmp) / "model.onnx", name, tags={
             "arch": meta["arch"]["type"], "source": "release-bundle",
             "origin_version": meta.get("registry", {}).get("version", "?")})
-    client.set_registered_model_alias(name, "champion", version)
+    client.set_registered_model_alias(name, "champion", str(version))     # the REST API wants text
     client.delete_registered_model_alias(name, "challenger")
     print(f"{name}: release model (origin v{meta.get('registry', {}).get('version', '?')}) seeded as v{version} @champion")
     return version
