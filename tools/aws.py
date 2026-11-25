@@ -17,6 +17,8 @@
               python tools/aws.py run -- --source clip.mp4 --set streaming.camera_id=pi-cam
                                                  the detector here (run.py), everything else on the server
               python tools/aws.py status         on / off, containers, memory, credits left
+              python tools/aws.py model rollback 1   the model registry on the server (deploy/model.sh: list,
+                                                 promote, rollback <version>)
               python tools/aws.py stop           switch off (it also stops itself every night)
 
     the end   python tools/aws.py destroy        deletes the server and its data (asks first)
@@ -450,6 +452,12 @@ def status(args):
     return 0
 
 
+def model(args):
+    if not args or not re.fullmatch(r"[a-z-]+( --force)?( \d+)?", " ".join(args)):
+        sys.exit("usage: python tools/aws.py model list | promote [--force] | rollback <version>")
+    return ssh(f"cd {REMOTE} && bash deploy/model.sh {' '.join(args)}", check=False).returncode
+
+
 def tunnel(args):
     p = open_tunnel(list(PORTS))
     for n, port in PORTS.items():
@@ -490,7 +498,7 @@ def run(args):
 
 
 COMMANDS = {"check": check, "prepare": prepare, "plan": plan, "apply": apply, "destroy": destroy, "deploy": deploy,
-            "copy-data": copy_data, "user-data": user_data, "use": use, "start": start, "stop": stop, "status": status, "tunnel": tunnel, "run": run}
+            "copy-data": copy_data, "user-data": user_data, "use": use, "start": start, "stop": stop, "status": status, "model": model, "tunnel": tunnel, "run": run}
 
 
 def main():
