@@ -45,6 +45,8 @@ deploy/aws/.terraform.lock.hcl
 deploy/aws/terraform.tfvars
 # the AWS server's passwords (tools/aws.py prepare)
 deploy/aws/server.env
+deploy/aws/server.json
+deploy/aws/user-data.yaml
 
 # personal list of addresses and logins (never committed)
 MY_LOGINS.txt

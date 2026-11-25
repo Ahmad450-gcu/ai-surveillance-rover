@@ -2,6 +2,7 @@
 import re
 from pathlib import Path
 
+import pytest
 import yaml
 
 from tools import aws
@@ -59,6 +60,22 @@ def test_prepare_keeps_the_passwords_and_the_other_logins(tmp_path, monkeypatch)
     assert (tmp_path / "server.env").read_text() == first
     assert logins.startswith("my laptop logins") and logins.count("Grafana") == 1
     assert aws.read_env(tmp_path / "server.env")["DASHBOARD_PASSWORD"] in logins
+
+
+def test_a_server_made_by_hand(tmp_path, monkeypatch):
+    monkeypatch.setattr(aws, "USER_DATA", tmp_path / "user-data.yaml")
+    monkeypatch.setattr(aws, "MANUAL", tmp_path / "server.json")
+    monkeypatch.setattr(aws, "ROOT", tmp_path)
+    aws.user_data([])
+    text = (tmp_path / "user-data.yaml").read_text(encoding="utf-8")
+    doc = yaml.safe_load(text)
+    assert "${" not in text and doc["timezone"] == "Asia/Karachi" and "fallocate -l 4G" in text and "23:30" in text
+    with pytest.raises(SystemExit):
+        aws.use(["not-an-ip"])
+    aws.use(["13.54.1.2"])
+    assert aws.outputs()["public_ip"] == "13.54.1.2"
+    with pytest.raises(SystemExit):                                       # no instance id: switched in the console
+        aws.start([])
 
 
 def test_the_detector_settings_exist_in_the_config():

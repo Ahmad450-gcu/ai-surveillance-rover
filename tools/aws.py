@@ -9,6 +9,9 @@
               python tools/aws.py deploy         installs the latest published release and tests it
               python tools/aws.py copy-data      this computer's alerts, models and training data -> the server
 
+    or        python tools/aws.py user-data      a server made by hand in the AWS console: the file for its "User data" box
+              python tools/aws.py use <ip> [instance-id]    ... and its address, instead of plan / apply
+
     daily     python tools/aws.py start          switch on; prints the addresses
               python tools/aws.py tunnel         every service on localhost until Ctrl+C
               python tools/aws.py run -- --source clip.mp4 --set streaming.camera_id=pi-cam
@@ -34,6 +37,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 TF = ROOT / "deploy" / "aws"
 ENV_FILE = TF / "server.env"
+MANUAL = TF / "server.json"                                   # a server made by hand (command "use")
+USER_DATA = TF / "user-data.yaml"
 LOGINS = ROOT / "MY_LOGINS.txt"
 KEY = Path.home() / ".ssh" / "rover_aws"
 REMOTE = "/opt/rover"
@@ -111,6 +116,8 @@ def terraform(*args, capture=False, check=True):
 
 
 def outputs():
+    if MANUAL.exists():
+        return json.loads(MANUAL.read_text(encoding="utf-8"))
     r = terraform("output", "-json", capture=True, check=False)
     values = json.loads(r.stdout) if r.returncode == 0 and r.stdout.strip() else {}
     if "public_ip" not in values:
@@ -242,6 +249,31 @@ def prepare(args):
     old = re.sub(r"===== AWS SERVER.*?===== END AWS SERVER =====\n?", "", old, flags=re.S).rstrip()
     LOGINS.write_text((old + "\n\n" if old else "") + logins_text(read_env(ENV_FILE)), encoding="utf-8")
     print(f"logins written to {LOGINS.name}")
+    return 0
+
+
+def tf_default(name):
+    """tf_setting, for numbers too."""
+    block = re.search(rf'variable "{name}" \{{(.*?)\n\}}', (TF / "variables.tf").read_text(encoding="utf-8"), re.S)[1]
+    return re.search(r'default\s*=\s*"?([^"\n]*)', block)[1]
+
+
+def user_data(args):
+    text = (TF / "cloud-init.yaml").read_text(encoding="utf-8")
+    for name, value in {"timezone": tf_setting("timezone"), "stop_at": tf_setting("stop_at"), "deploy_user": "ubuntu",
+                        "swap_gb": tf_default("swap_gb"), "repo_url": tf_setting("repo_url")}.items():
+        text = text.replace("${" + name + "}", value)
+    USER_DATA.write_text(text, encoding="utf-8", newline="\n")
+    print(f"written: {USER_DATA.relative_to(ROOT)}")
+    return 0
+
+
+def use(args):
+    if not args or not re.fullmatch(r"\d+\.\d+\.\d+\.\d+", args[0]):
+        sys.exit("usage: python tools/aws.py use <public IPv4 address> [i-instance-id]")
+    MANUAL.write_text(json.dumps({"public_ip": args[0], "instance_id": args[1] if len(args) > 1 else "",
+                                  "dashboard": f"http://{args[0]}:8080"}), encoding="utf-8")
+    print(f"the server is now {args[0]}")
     return 0
 
 
@@ -377,6 +409,9 @@ def copy_data(args):
 # ---------------- daily use ----------------
 def state():
     out = outputs()
+    if not out["instance_id"]:
+        sys.exit("This server was made by hand: switch it on / off in the AWS console (EC2, Instances). "
+                 "If its address changed: python tools/aws.py use <new ip>")
     s = aws("ec2", "describe-instances", "--instance-ids", out["instance_id"],
             "--query", "Reservations[0].Instances[0].State.Name")
     return s, out
@@ -454,7 +489,7 @@ def run(args):
 
 
 COMMANDS = {"check": check, "prepare": prepare, "plan": plan, "apply": apply, "destroy": destroy, "deploy": deploy,
-            "copy-data": copy_data, "start": start, "stop": stop, "status": status, "tunnel": tunnel, "run": run}
+            "copy-data": copy_data, "user-data": user_data, "use": use, "start": start, "stop": stop, "status": status, "tunnel": tunnel, "run": run}
 
 
 def main():

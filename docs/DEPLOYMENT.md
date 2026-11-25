@@ -113,6 +113,10 @@ python tools/aws.py copy-data             # this computer's alerts, users, model
 | Passwords | generated, different from the laptop's: `deploy/aws/server.env` (git-ignored), listed in `MY_LOGINS.txt` |
 | Daily stop | 23:30 (`stop_at`): the server shuts itself down, the data stays. Cancel once: `sudo shutdown -c` on the server |
 
+**Without Terraform** (the server made by hand in the AWS console): paste `~/.ssh/rover_aws.pub` as an imported key pair,
+Ubuntu 24.04, `m7i-flex.large`, 60 GB encrypted gp3, shutdown behaviour *Stop*, the file written by
+`python tools/aws.py user-data` as user data; then `python tools/aws.py use <ip> <instance-id>` and `deploy`.
+
 **Daily use:** `start`, `tunnel`, `status` (containers, memory, credits left), `stop`. The detector keeps running where the
 camera is; `run` opens the tunnel and starts it against the server:
 
